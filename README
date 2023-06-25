@@ -1,4 +1,4 @@
-# GoFiber SMB Image Server
+#GoFiber SMB Image Server
 
 This project demonstrates how to use GoFiber, a minimalist Go web framework, to serve image files stored on a remote SMB share file server. 
 
