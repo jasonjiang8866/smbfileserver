@@ -5,6 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -21,6 +22,12 @@ func main() {
 	})
 
 	v1.Get("/smb/:shareName/:fileName", func(c *fiber.Ctx) error {
+		// use godotenv to get env variables
+		err := godotenv.Load(".env")
+		if err != nil {
+			panic(err)
+		}
+		// create user struct
 		user := User{
 			serverName:   os.Getenv("serverName"),
 			serverIP:     os.Getenv("serverIP"),

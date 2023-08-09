@@ -2,3 +2,4 @@ setup.cmd
 *.exe
 go.mod
 go.sum
+.env
