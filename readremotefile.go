@@ -53,3 +53,8 @@ func readFile(s *smb2.Share, fileName string) []byte {
 	}
 	return fileBytes
 }
+
+func readFileWithError(s *smb2.Share, fileName string) ([]byte, error) {
+	fileBytes, err := s.ReadFile(fileName)
+	return fileBytes, err
+}
