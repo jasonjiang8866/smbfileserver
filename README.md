@@ -27,6 +27,49 @@ This project requires the following:
 
 - GET `/api/v1/hello`: A test route to check if the API is working correctly. Responds with the string "Hello, World 👋!"
 - GET `/api/v1/smb/:shareName/:fileName`: Serves the image file from the given SMB share.
+- POST `/api/v1/smb/:shareName/batch`: Serves multiple files concurrently from the given SMB share. Accepts JSON body with files array and optional concurrency setting.
+- GET `/api/v1/smb/:shareName/batch`: Serves multiple files concurrently using query parameters. Use `?files=file1.jpg,file2.png&concurrency=3`
+
+### Batch Endpoint Usage
+
+**POST Request:**
+```json
+{
+  "files": [
+    {"fileName": "image1.jpg"},
+    {"fileName": "image2.png"}
+  ],
+  "concurrency": 3
+}
+```
+
+**GET Request:**
+```
+/api/v1/smb/myshare/batch?files=image1.jpg,image2.png&concurrency=3
+```
+
+**Response:**
+```json
+{
+  "files": [
+    {
+      "fileName": "image1.jpg", 
+      "content": "base64encodedcontent...",
+      "error": ""
+    },
+    {
+      "fileName": "image2.png",
+      "content": "base64encodedcontent...", 
+      "error": ""
+    }
+  ]
+}
+```
+
+**Concurrency Control:**
+- Default concurrency: 3 workers
+- Maximum concurrency: 10 workers (for resource protection)
+- Concurrency can be adjusted per request
 
 ## Project Structure
 
