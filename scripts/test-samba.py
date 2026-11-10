@@ -8,7 +8,6 @@ import pathlib
 import pwd
 import secrets
 import shutil
-import signal
 import socket
 import subprocess
 import tempfile
@@ -92,8 +91,10 @@ def main():
         subprocess.run(['smbd', '--version'], check=True)
         log = (root / 'smbd.log').open('w')
         # Start a dedicated process group; stop only this fixture and its children.
+        # Foreground smbd exits on stdin EOF. Keep a pipe open throughout the
+        # tests, since CI's inherited stdin is already at EOF.
         process = subprocess.Popen(root_command + ['smbd', '-F', '--no-process-group', '--debug-stdout', '-d', '1', '-s', str(config)],
-                                   stdout=log, stderr=log, start_new_session=True)
+                                   stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True)
         for attempt in range(100):
             if process.poll() is not None:
                 raise RuntimeError(f'isolated smbd exited before readiness (status {process.returncode})')
@@ -123,6 +124,7 @@ def main():
             except subprocess.TimeoutExpired:
                 subprocess.run(root_command + ['kill', '-KILL', '--', f'-{process.pid}'], check=False)
                 process.wait(timeout=5)
+            process.stdin.close()
         if log:
             log.close()
         # Samba's private files may be owned by root; root is a fresh tempfile path.
