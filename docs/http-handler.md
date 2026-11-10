@@ -1,0 +1,44 @@
+# Embedding `smbhttp`
+
+`New(reader FileReader, options Options) (*Handler, error)` creates a concurrent `http.Handler`. The handler receives an already initialized reader; it does not own or close that reader. A reader must support concurrent calls, stop promptly on context cancellation, and return buffered file contents. The public contract exposes no Fiber or CloudSoda types.
+
+## Mounting and routes
+
+Mount with `mux.Handle("/files/", http.StripPrefix("/files", h))`. Routes below are relative to that prefix and match case-sensitively:
+
+| Method | Relative route | Response |
+| --- | --- | --- |
+| GET / HEAD | `/{share}/{file}` | Content-sniffed raw bytes, `nosniff`, content length |
+| GET / HEAD | `/{share}/batch?files=a,b&concurrency=3` | Legacy Base64 batch JSON |
+| POST | `/{share}/batch` | Base64 batch JSON from `BatchFileRequest` |
+
+HEAD performs the same reads and computes the same headers, but writes no response body. It is not a cheap SMB availability probe. Unknown paths return 404; unsupported methods return 405 with `Allow`. No hello/health endpoint is installed by this package. The gateway keeps its own `/api/v1/hello` endpoint.
+
+A single-file URL occupies one decoded path segment. Nested names and names containing commas belong in POST batch JSON. URL paths are decoded once by net/http; the handler does not perform another URL-unescape. The exact name `batch` is reserved; read such a file through the batch payload. Empty segments, extra segments and trailing slashes do not match. Mounting behind a ServeMux may additionally apply that mux's canonical-path redirects.
+
+The host must authenticate and authorize callers and constrain shares/paths before backend access. A URL prefix is not a filesystem confinement boundary. This extraction intentionally does not claim traversal, symlink, DFS or reparse-point protection.
+
+## Options and cancellation
+
+- `RequestTimeout`: zero selects 30 seconds; a negative value is invalid. The request context is retained, including middleware values and any earlier deadline. It covers the whole batch, including queued files.
+- `MaxBodyBytes`: zero selects 4 MiB; a negative value is invalid. POST requires `application/json`, accepts exactly one JSON value, and returns 413 for an oversized input body. Unknown JSON fields remain accepted for compatibility. Media types previously accepted incidentally by Fiber's generic BodyParser, such as form/XML bodies, are now rejected with 415.
+- A nil reader is invalid. As with standard Go interfaces, callers must also avoid supplying a typed nil pointer as a reader.
+
+The host server owns HTTP header/body-read/write/idle timeouts and graceful shutdown. The handler cannot forcibly stop a reader that ignores its context, and its context timeout alone cannot interrupt a stalled HTTP body read. Set server read timeouts. No background worker persists after a request completes.
+
+Native net/http request cancellation, including a disconnected HTTP client, reaches the reader. The Fiber gateway uses a thin adapter and explicitly combines its shutdown context with the adapted request context. Fiber v2 cannot supply the same disconnect signal; the adapter does not promise it.
+
+## Results and limits
+
+`FileRequest`, `BatchFileRequest`, `FileResponse` and `BatchFileResponse` describe the existing JSON contract. Batch output retains order and duplicates, defaults to 3 workers and caps requested concurrency at 10. Canceled queued work does not call the reader. A valid batch returns 200 with per-item errors, even if all reads fail. A backend panic becomes a sanitized 500 for a single read, or a per-item generic error inside a batch.
+
+Wrap `fs.ErrNotExist`, `fs.ErrPermission`, `context.Canceled` or `context.DeadlineExceeded` to preserve HTTP classification. Network timeouts map to 504; unknown backend errors map to a generic 502. Raw backend text is never included in HTTP errors.
+
+File responses are fully buffered and Base64 expands batch memory use. Body size is an input limit, not an output/file limit. No streaming, Range/conditional reads, global concurrency bound, batch-count cap or authentication mechanism is added in this PR. The dependency boundary and lifecycle contract are intended to support those additions without binding importers to the gateway.
+
+## Verification
+
+- External-package tests import only the public API and exercise mounting, MIME/binary/HEAD responses, batch ordering, errors, malformed/oversized input, middleware context values, deadlines, queued cancellation, panic containment and real HTTP socket disconnects.
+- Existing Fiber gateway route and graceful-shutdown tests run unchanged in intent against the shared handler.
+- CI enforces the standard-library-only production dependency tree of `smbhttp`, recursively formats all Go packages, and runs Go 1.26/1.27 race tests, vet, builds and vulnerability scans.
+- The Samba job includes an actual native HTTP disconnect after a transfer has reached 64 KiB, checks cancellation reaches CloudSoda, then reads from an encryption-required share through the same handler/reader. Consult the PR's CI run for executed results; Windows/AD and OpenShift are still separate acceptance work.

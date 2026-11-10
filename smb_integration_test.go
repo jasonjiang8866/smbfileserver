@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jasonjiang8866/smbfileserver/smbhttp"
 	"io"
 	"io/fs"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -71,7 +74,7 @@ func TestSMBIntegrationReadAndHTTP(t *testing.T) {
 				t.Fatalf("HTTP read failed: status=%d", resp.StatusCode)
 			}
 			resp = request(t, app, "POST", "/api/v1/smb/"+share+"/batch", `{"files":[{"fileName":"hello.txt"},{"fileName":"missing.txt"},{"fileName":"nested/工艺 报表.csv"},{"fileName":"hello.txt"}],"concurrency":4}`)
-			var batch BatchFileResponse
+			var batch smbhttp.BatchFileResponse
 			if err := json.NewDecoder(resp.Body).Decode(&batch); err != nil {
 				t.Fatal(err)
 			}
@@ -103,14 +106,13 @@ func TestSMBIntegrationErrorsAndRecovery(t *testing.T) {
 	reader := &SMBReader{config: cfg}
 	for _, tc := range []struct {
 		share, file string
-		status      int
+		want        error
 	}{
-		{"readonly", "missing.txt", 404}, {"readonly", "denied.txt", 403}, {"missing-share", "hello.txt", 502},
+		{"readonly", "missing.txt", fs.ErrNotExist}, {"readonly", "denied.txt", fs.ErrPermission}, {"missing-share", "hello.txt", nil},
 	} {
 		_, err := reader.ReadFile(context.Background(), tc.share, tc.file)
-		status, _ := publicReadError(err)
-		if err == nil || status != tc.status {
-			t.Fatalf("%s/%s: status=%d err=%v", tc.share, tc.file, status, err)
+		if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) {
+			t.Fatalf("%s/%s: err=%v", tc.share, tc.file, err)
 		}
 	}
 	bad := cfg
@@ -285,10 +287,9 @@ func TestSMBIntegrationInterruptedRead(t *testing.T) {
 				if err == nil {
 					t.Fatal("interrupted read unexpectedly succeeded")
 				}
-				status, _ := publicReadError(err)
-				want := map[string]int{"cancel": 503, "deadline": 504, "disconnect": 502}[mode]
-				if status != want {
-					t.Fatalf("got status=%d, want=%d: %v", status, want, err)
+				want := map[string]error{"cancel": context.Canceled, "deadline": context.DeadlineExceeded}[mode]
+				if want != nil && !errors.Is(err, want) {
+					t.Fatalf("got %v, want %v", err, want)
 				}
 			case <-time.After(4 * time.Second):
 				t.Fatal("SMB read did not release on interruption")
@@ -299,5 +300,59 @@ func TestSMBIntegrationInterruptedRead(t *testing.T) {
 				t.Fatal(fmt.Errorf("reconnect failed: %w", err))
 			}
 		})
+	}
+}
+
+// Verify the full net/http -> CloudSoda cancellation path against Samba while a
+// real transfer is paused, then reuse the handler/reader for another request.
+func TestSMBIntegrationHTTPDisconnect(t *testing.T) {
+	base := integrationConfig(t)
+	proxy := newPausedProxy(t, net.JoinHostPort(base.SMBHost, base.SMBPort))
+	defer proxy.close()
+	base.SMBHost, base.SMBPort, _ = net.SplitHostPort(proxy.listener.Addr().String())
+	reader := &SMBReader{config: base}
+	finished := make(chan error, 2)
+	h, err := smbhttp.New(readerFunc(func(ctx context.Context, share, file string) ([]byte, error) {
+		data, err := reader.ReadFile(ctx, share, file)
+		finished <- err
+		return data, err
+	}), smbhttp.Options{RequestTimeout: base.RequestTimeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err = io.WriteString(conn, "GET /readonly/large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-proxy.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP transfer did not reach SMB pause")
+	}
+	_ = conn.Close()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("disconnect: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HTTP disconnect did not release SMB read")
+	}
+	proxy.unpause()
+	client := http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get(server.URL + "/encrypted/hello.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != 200 || string(data) != "SMB integration fixture\n" {
+		t.Fatalf("HTTP recovery: status=%d err=%v", response.StatusCode, err)
 	}
 }
