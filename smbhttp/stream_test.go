@@ -1,0 +1,234 @@
+package smbhttp_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"github.com/jasonjiang8866/smbfileserver/smbhttp"
+)
+
+type openReader struct {
+	open     func(context.Context) (fs.File, error)
+	buffered atomic.Int32
+}
+
+func (o *openReader) Open(ctx context.Context, _, _ string) (fs.File, error) { return o.open(ctx) }
+func (o *openReader) ReadFile(context.Context, string, string) ([]byte, error) {
+	o.buffered.Add(1)
+	return []byte("buffered"), nil
+}
+
+type fakeStream struct {
+	fs.File
+	read  func([]byte) (int, error)
+	close func() error
+}
+
+func (f *fakeStream) Read(p []byte) (int, error) { return f.read(p) }
+func (f *fakeStream) Close() error               { return f.close() }
+func fixture() fs.File {
+	f, _ := (fstest.MapFS{"f": &fstest.MapFile{Data: []byte("metadata")}}).Open("f")
+	return f
+}
+
+func TestStreamingFirstBytesAndDisconnect(t *testing.T) {
+	closed := make(chan struct{})
+	var once sync.Once
+	var reads atomic.Int32
+	source := &openReader{open: func(ctx context.Context) (fs.File, error) {
+		return &fakeStream{File: fixture(), read: func(p []byte) (int, error) {
+			if reads.Add(1) == 1 {
+				return copy(p, bytes.Repeat([]byte("x"), 512)), nil
+			}
+			<-ctx.Done()
+			return 0, ctx.Err()
+		}, close: func() error { once.Do(func() { close(closed) }); return nil }}, nil
+	}}
+	server := httptest.NewServer(handler(t, source, smbhttp.Options{RequestTimeout: 5 * time.Second}))
+	defer server.Close()
+	client := http.Client{Timeout: time.Second}
+	response, err := client.Get(server.URL + "/s/f")
+	if err != nil {
+		t.Fatalf("first bytes blocked on complete read: %v", err)
+	}
+	prefix := make([]byte, 128)
+	if _, err := io.ReadFull(response.Body, prefix); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect did not close stream")
+	}
+	if source.buffered.Load() != 0 {
+		t.Fatal("streaming capability not selected")
+	}
+}
+func TestStreamingFailureAbortsBody(t *testing.T) {
+	for _, panicAfter := range []bool{false, true} {
+		var reads int
+		var closed atomic.Int32
+		source := &openReader{open: func(context.Context) (fs.File, error) {
+			return &fakeStream{File: fixture(), read: func(p []byte) (int, error) {
+				reads++
+				if reads == 1 {
+					return copy(p, bytes.Repeat([]byte("x"), 512)), nil
+				}
+				if panicAfter {
+					panic("secret")
+				}
+				return 0, errors.New("secret")
+			}, close: func() error { closed.Add(1); return nil }}, nil
+		}}
+		server := httptest.NewServer(handler(t, source, smbhttp.Options{}))
+		response, err := (&http.Client{Timeout: time.Second}).Get(server.URL + "/s/f")
+		if err != nil {
+			server.Close()
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		server.Close()
+		if err == nil || response.StatusCode != 200 || bytes.Contains(data, []byte("secret")) || bytes.Contains(data, []byte("error")) {
+			t.Fatalf("late failure appeared successful: %q %v", data, err)
+		}
+		if closed.Load() != 1 {
+			t.Fatal("failure leaked stream")
+		}
+	}
+}
+func TestStreamingHEADAndFallback(t *testing.T) {
+	var reads, closed atomic.Int32
+	source := &openReader{open: func(context.Context) (fs.File, error) {
+		return &fakeStream{File: fixture(), read: func([]byte) (int, error) { reads.Add(1); return 0, io.EOF }, close: func() error { closed.Add(1); return nil }}, nil
+	}}
+	h := handler(t, source, smbhttp.Options{})
+	w := call(h, "HEAD", "/s/f", "")
+	if w.Code != 200 || w.Body.Len() != 0 || w.Header().Get("Content-Length") != "8" || reads.Load() != 0 || closed.Load() != 1 {
+		t.Fatal("HEAD read body or leaked")
+	}
+	h = handler(t, source, smbhttp.Options{DisableStreaming: true})
+	if w := call(h, "GET", "/s/f", ""); w.Body.String() != "buffered" || source.buffered.Load() != 1 {
+		t.Fatal("explicit fallback not used")
+	}
+}
+func TestBatchLimits(t *testing.T) {
+	var calls atomic.Int32
+	reader := readerFunc(func(context.Context, string, string) ([]byte, error) { calls.Add(1); return []byte("1234"), nil })
+	h := handler(t, reader, smbhttp.Options{MaxBatchFiles: 2, MaxBatchBytes: 6})
+	w := call(h, "POST", "/s/batch", `{"files":[{"fileName":"a"},{"fileName":"b"},{"fileName":"c"}]}`)
+	if w.Code != 413 || calls.Load() != 0 {
+		t.Fatal("file-count limit did not reject early")
+	}
+	w = call(h, "POST", "/s/batch", `{"files":[{"fileName":"a"},{"fileName":"b"}],"concurrency":1}`)
+	var result smbhttp.BatchFileResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Files[0].Content != "MTIzNA==" || result.Files[1].Error != "batch byte limit exceeded" {
+		t.Fatalf("batch budget: %+v", result)
+	}
+	total := 0
+	for _, f := range result.Files {
+		data, _ := base64.StdEncoding.DecodeString(f.Content)
+		total += len(data)
+	}
+	if total > 6 {
+		t.Fatal("aggregate contents exceeded budget")
+	}
+}
+
+// Generated bytes and a discard writer measure handler allocations rather than
+// allocating a whole fixture/HTTP response in the benchmark itself.
+type generatedFile struct {
+	fs.File
+	remaining int64
+	maxRead   int
+}
+
+func (f *generatedFile) Read(p []byte) (int, error) {
+	if len(p) > f.maxRead {
+		f.maxRead = len(p)
+	}
+	if f.remaining == 0 {
+		return 0, io.EOF
+	}
+	n := int64(len(p))
+	if n > f.remaining {
+		n = f.remaining
+	}
+	clear(p[:n])
+	f.remaining -= n
+	return int(n), nil
+}
+
+type discardWriter struct{ header http.Header }
+
+func (w *discardWriter) Header() http.Header       { return w.header }
+func (*discardWriter) WriteHeader(int)             {}
+func (*discardWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (*discardWriter) Flush()                      {}
+func BenchmarkStreaming(b *testing.B) {
+	for _, size := range []int64{8 << 20, 64 << 20} {
+		b.Run(strconv.FormatInt(size>>20, 10)+"MiB", func(b *testing.B) {
+			source := &openReader{open: func(context.Context) (fs.File, error) { return &generatedFile{File: fixture(), remaining: size}, nil }}
+			h, _ := smbhttp.New(source, smbhttp.Options{})
+			r := httptest.NewRequest("GET", "/s/f", nil)
+			b.ReportAllocs()
+			b.SetBytes(size)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				h.ServeHTTP(&discardWriter{header: make(http.Header)}, r)
+			}
+		})
+	}
+}
+func TestStreamingUsesFixedReadBuffer(t *testing.T) {
+	file := &generatedFile{File: fixture(), remaining: 8 << 20}
+	source := &openReader{open: func(context.Context) (fs.File, error) { return file, nil }}
+	h := handler(t, source, smbhttp.Options{})
+	h.ServeHTTP(&discardWriter{header: make(http.Header)}, httptest.NewRequest("GET", "/s/f", nil))
+	if file.maxRead > 32<<10 || source.buffered.Load() != 0 || file.remaining != 0 {
+		t.Fatalf("unexpected buffering: maxRead=%d", file.maxRead)
+	}
+}
+
+func TestStreamingErrorBeforeHeaders(t *testing.T) {
+	var closed atomic.Int32
+	source := &openReader{open: func(context.Context) (fs.File, error) {
+		return &fakeStream{File: fixture(), read: func(p []byte) (int, error) { return copy(p, "short"), io.ErrUnexpectedEOF }, close: func() error { closed.Add(1); return nil }}, nil
+	}}
+	w := call(handler(t, source, smbhttp.Options{}), "GET", "/s/f", "")
+	if w.Code != 502 || bytes.Contains(w.Body.Bytes(), []byte("short")) || closed.Load() != 1 {
+		t.Fatal("pre-header failure was sent as a successful short file")
+	}
+}
+func TestBatchStreamingSourceStopsAtBudget(t *testing.T) {
+	var closed atomic.Int32
+	source := &openReader{open: func(context.Context) (fs.File, error) {
+		f := fixture()
+		return &fakeStream{File: f, read: f.Read, close: func() error { closed.Add(1); return f.Close() }}, nil
+	}}
+	w := call(handler(t, source, smbhttp.Options{MaxBatchBytes: 3}), "POST", "/s/batch", `{"files":[{"fileName":"f"}]}`)
+	var result smbhttp.BatchFileResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Content != "" || result.Files[0].Error != "batch byte limit exceeded" || closed.Load() != 1 || source.buffered.Load() != 0 {
+		t.Fatalf("unbounded batch read: %+v", result)
+	}
+}

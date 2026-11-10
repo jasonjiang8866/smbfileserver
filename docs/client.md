@@ -1,6 +1,6 @@
 # Public client: added value and contract
 
-Import `github.com/jasonjiang8866/smbfileserver/client`. `New(Config)` validates an immutable configuration snapshot and returns a concurrent `*Client`. `ReadFile(context.Context, share, file)` returns complete bytes or an error. The client implements `smbhttp.FileReader` structurally, and can also be used by a worker or CLI with no HTTP handler.
+Import `github.com/jasonjiang8866/smbfileserver/client`. `New(Config)` validates an immutable configuration snapshot and returns a concurrent `*Client`. `Open(context.Context, share, file)` returns a streaming `fs.File`; `ReadFile` remains the complete-byte convenience API built on Open. The client implements `smbhttp.FileReader` structurally, and can also be used by a worker or CLI with no HTTP handler.
 
 ## What belongs to this project
 
@@ -9,13 +9,13 @@ CloudSoda owns the SMB wire protocol: negotiation, NTLM implementation, signing/
 | Added behavior | Observable evidence |
 | --- | --- |
 | One operation budget includes waiting, connecting, authenticating, reading and cleanup | Queued cancellation does not dial; stalled negotiation ends on timeout and closes TCP |
-| One reusable client shares admission across callers | A paused live SMB transfer holds the only configured slot; a second HTTP request times out without opening another SMB connection |
+| One reusable client shares admission across callers for each stream's lifetime | A paused live SMB transfer holds the only configured slot; a second HTTP request times out without opening another SMB connection |
 | Per-file size policy covers actual bytes, not just Stat | Known oversize is rejected before content reads; a simulated file growing beyond its advertised size also fails; exact-boundary and empty live Samba files succeed |
 | Central ownership of file/share/session/connection cleanup | Cancellation, transport failure and size rejection release the slot; subsequent reads succeed without recreating the client |
 | Backend-independent, sanitized errors | `errors.Is` and `errors.As` work without importing CloudSoda; no raw backend messages, usernames, passwords, hosts or paths are returned in library diagnostics |
 | Direct composition with the HTTP layer and gateway | Executable constructor/mux example; gateway and Samba tests use the public client rather than a private implementation |
 
-This is not a new SMB protocol implementation or a performance optimization. The package does not expose writes, directory APIs, arbitrary session handles, protocol knobs or Kerberos configuration. Applications needing those should use CloudSoda's lower-level APIs. Fresh connections cost a negotiation/authentication round trip per file; pooling requires separate measurements and credential/session isolation work.
+This is not a new SMB protocol implementation or a performance optimization. The package exposes Open/ReadFile and standard metadata, but no writes, directory APIs, arbitrary session handles, protocol knobs or Kerberos configuration. Applications needing those should use CloudSoda's lower-level APIs. Fresh connections cost a negotiation/authentication round trip per file; pooling requires separate measurements and credential/session isolation work.
 
 ## Configuration
 
@@ -29,13 +29,13 @@ This is not a new SMB protocol implementation or a performance optimization. The
 | `MaxConcurrentReads` | Zero selects 8; negative is invalid |
 | `MaxFileBytes` | Zero selects 32 MiB; negative or MaxInt64 is invalid |
 
-Use one client for callers that should share a limit. Configuration is copied at construction, so mutating the original Config does not change active or later calls. There is no environment/dotenv loading, listener, signal hook, persistent goroutine or open connection at construction. Credentials remain in memory for future calls; create a new client to rotate them. Do not log or serialize Config: it contains the password. Each read owns its resources, so no Client.Close is needed. The zero Client value is not usable and a constructed Client should not be copied.
+Use one client for callers that should share a limit. Configuration is copied at construction, so mutating the original Config does not change active or later calls. There is no environment/dotenv loading, listener, signal hook, persistent goroutine or open connection at construction. Credentials remain in memory for future calls; create a new client to rotate them. Do not log or serialize Config: it contains the password. No Client.Close is needed. Open callers close the returned stream; EOF, errors and deadline/cancellation also release it automatically. The zero Client value is not usable and a constructed Client should not be copied.
 
 The Go module still includes gateway dependencies. The client package does not import Fiber, dotenv or smbhttp; CloudSoda and its authentication dependencies remain in its dependency graph. The HTTP package's production dependency graph remains standard-library-only.
 
 ## Lifecycle and cancellation
 
-A call creates a timeout context from the caller, waits for a slot, then acquires TCP → session → share → file. Cleanup occurs in reverse order, before releasing admission. The timeout context is propagated to SMB operations and a TCP deadline; cancellation additionally closes TCP to interrupt stalled I/O and cleanup. An earlier parent deadline wins. Callers must supply a non-nil context.
+A call creates a timeout context from the caller, waits for a slot, then acquires TCP → session → share → file. A returned stream retains admission until Close, EOF, error or context expiry. Close first closes TCP to interrupt a concurrent stalled Read, then attempts file/share/session cleanup and releases admission exactly once. Open failures clean up the resources acquired so far. The timeout context is propagated to SMB operations and a TCP deadline; cancellation additionally closes TCP to interrupt stalled I/O and cleanup. An earlier parent deadline wins. Callers must supply a non-nil context.
 
 A call uses a fresh connection, with no transparent retries. After a failure, a later call can negotiate again; this is reconnection on the next call, not replay of the failed operation. Avoid constructing a new client on every HTTP request, which would give each request an independent limit.
 
@@ -43,15 +43,15 @@ Native net/http disconnect cancellation flows through smbhttp into the client. F
 
 ## File size and resource scope
 
-`ReadFile` opens read-only, checks metadata, and then reads at most the limit plus one byte to detect growth or inaccurate metadata. A successful result has at most `MaxFileBytes` bytes. Failure returns nil data, including a mid-read failure; no truncated-success response is returned.
+`Open` checks opening metadata and limits cumulative reads to the configured maximum, probing one extra byte to detect growth. `ReadFile` consumes that same bounded stream. A successful result has at most `MaxFileBytes` bytes. ReadFile failures return nil data. Open streams can deliver a prefix before failing; callers must check Read/io.Copy errors and close the stream. Stat returns a cached opening snapshot (also after Close), not a fresh server query. EOF and fs.ErrClosed are standard stream results; backend failures retain OpError classification.
 
-The byte cap applies to a single file's contents, not total network traffic, allocation overhead, batch output or process RSS. Batch responses retain completed files and Base64 adds overhead. The active-read cap does not bound the number of waiting callers. Total response bytes, queue length, slow-client memory, process-wide policy across multiple clients and replica-wide load remain separate controls. These limits do not make the gateway production-ready for arbitrary untrusted workloads.
+The byte cap applies to a single file's contents, not total network traffic, allocation overhead, batch output or process RSS. Batch responses retain completed files and Base64 adds overhead. The active-read cap does not bound the number of waiting callers. The HTTP handler now caps batch file count and retained decoded contents, but transient worker/encoding allocations, queue length, slow-client memory, process-wide policy across multiple clients and replica-wide load still require sizing. Single-file streaming uses fixed-size handler buffers; see [streaming evidence](streaming.md). These limits do not make the gateway production-ready for arbitrary untrusted workloads.
 
 The gateway now defaults to 8 active reads and 32 MiB per file, replacing the previous per-batch-only concurrency and unbounded individual reads. Configure `SMB_MAX_CONCURRENT_READS` and `SMB_MAX_FILE_BYTES` explicitly for another workload. Both environment values must be positive integers; zero is reserved for defaults only in the Go Config API.
 
 ## Error contract
 
-All operation failures return an `*OpError` with a stage such as `admit`, `connect`, `authenticate`, `mount`, `open` or `read`. Its wrapped error is one of:
+Open/ReadFile backend failures return an `*OpError` with a stage such as `admit`, `connect`, `authenticate`, `mount`, `open` or `read`. Its wrapped error is one of:
 
 | `errors.Is` target | Meaning | smbhttp response |
 | --- | --- | --- |

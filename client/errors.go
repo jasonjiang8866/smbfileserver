@@ -59,6 +59,8 @@ func opError(ctx context.Context, op string, err error) error {
 		kind = fs.ErrNotExist
 	case errors.Is(err, fs.ErrPermission):
 		kind = fs.ErrPermission
+	case errors.Is(err, fs.ErrClosed):
+		kind = fs.ErrClosed
 	case errors.Is(err, fs.ErrInvalid):
 		kind = fs.ErrInvalid
 	}

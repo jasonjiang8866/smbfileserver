@@ -20,7 +20,7 @@ func TestConfigEnvironmentOnlyAndLegacy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.SMBHost != "files.example.test" || cfg.SMBPassword != "secret" || cfg.RequestTimeout != 30*time.Second || cfg.ListenAddress != ":3000" || cfg.SMBMaxConcurrentReads != 8 || cfg.SMBMaxFileBytes != 32<<20 {
+		if cfg.SMBHost != "files.example.test" || cfg.SMBPassword != "secret" || cfg.RequestTimeout != 30*time.Second || cfg.ListenAddress != ":3000" || cfg.HTTPServer != "nethttp" || cfg.MaxBatchFiles != 100 || cfg.MaxBatchBytes != 32<<20 || cfg.SMBMaxConcurrentReads != 8 || cfg.SMBMaxFileBytes != 32<<20 {
 			t.Fatalf("unexpected defaults (credentials omitted)")
 		}
 	}
@@ -53,7 +53,7 @@ func TestConfigValidation(t *testing.T) {
 		{"SMB_HOST", "smb://host/share"}, {"SMB_HOST", "host:445"},
 		{"SMB_PORT", "0"}, {"SMB_PORT", "65536"}, {"HTTP_ADDR", ":abc"},
 		{"REQUEST_TIMEOUT", "0s"}, {"REQUEST_TIMEOUT", "-1s"}, {"REQUEST_TIMEOUT", "11m"},
-		{"SHUTDOWN_TIMEOUT", "bad"},
+		{"SHUTDOWN_TIMEOUT", "bad"}, {"HTTP_SERVER", "invalid"}, {"MAX_BATCH_FILES", "0"}, {"MAX_BATCH_BYTES", "-1"}, {"MAX_BATCH_BYTES", "9223372036854775807"},
 		{"SMB_MAX_CONCURRENT_READS", "0"}, {"SMB_MAX_CONCURRENT_READS", "-1"}, {"SMB_MAX_CONCURRENT_READS", "abc"},
 		{"SMB_MAX_FILE_BYTES", "0"}, {"SMB_MAX_FILE_BYTES", "-1"}, {"SMB_MAX_FILE_BYTES", "9223372036854775807"},
 	}

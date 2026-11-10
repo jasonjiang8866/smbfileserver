@@ -43,7 +43,7 @@ type Config struct {
 
 // Client implements smbhttp.FileReader structurally, without importing HTTP or
 // Fiber. Construct it with New; the zero value is not usable. There is no Close
-// method because every ReadFile closes its own resources before returning.
+// method: ReadFile owns cleanup; callers of Open close each returned stream.
 type Client struct {
 	config Config
 	slots  chan struct{}
@@ -90,18 +90,43 @@ func New(config Config) (*Client, error) {
 	return &Client{config: config, slots: make(chan struct{}, config.MaxConcurrentReads)}, nil
 }
 
-// ReadFile returns the whole file or nil on failure, never partial contents.
-// It uses one total timeout, including time waiting for a concurrency slot; an
-// earlier parent deadline wins. Canceled queued work does not dial the server.
-// Each call establishes a fresh session: failures cannot poison another call,
-// and there are no automatic retries or pooled connections.
-//
-// share must be a bare share name, not a UNC path. file may be a nested name.
-// These checks are not authorization or path confinement; enforce those in the
-// embedding application and on the SMB server using a read-only account.
+// ReadFile is the buffered convenience API built on Open. It returns the whole
+// file or nil on failure. Use Open for incremental transfer without retaining it.
 func (c *Client) ReadFile(parent context.Context, shareName, fileName string) ([]byte, error) {
+	file, err := c.Open(parent, shareName, fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := readBounded(file, c.config.MaxFileBytes)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// Open returns a read-only stream and cached metadata. Call Close even after
+// partial reads. EOF, read failure, context cancellation and timeout also release
+// resources automatically. The admission slot is held for the stream's lifetime.
+// The timeout starts before admission and continues after Open returns.
+// Each call uses a fresh session; no retries or pooling are performed.
+// A bare share name is required; nested file paths are supported but not confined.
+func (c *Client) Open(parent context.Context, shareName, fileName string) (fs.File, error) {
 	ctx, cancel := context.WithTimeout(parent, c.config.Timeout)
-	defer cancel()
+	transferred := false
+	var cleanups []func()
+	var stop func() bool
+	defer func() {
+		if !transferred {
+			for i := len(cleanups) - 1; i >= 0; i-- {
+				cleanups[i]()
+			}
+			cancel()
+		}
+		if stop != nil {
+			stop()
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, opError(ctx, "admit", err)
 	}
@@ -110,11 +135,10 @@ func (c *Client) ReadFile(parent context.Context, shareName, fileName string) ([
 	}
 	select {
 	case c.slots <- struct{}{}:
-		defer func() { <-c.slots }()
+		cleanups = append(cleanups, func() { <-c.slots })
 	case <-ctx.Done():
 		return nil, opError(ctx, "admit", ctx.Err())
 	}
-	// Both select cases can be ready when the parent is canceled.
 	if err := ctx.Err(); err != nil {
 		return nil, opError(ctx, "admit", err)
 	}
@@ -122,36 +146,52 @@ func (c *Client) ReadFile(parent context.Context, shareName, fileName string) ([
 	if err != nil {
 		return nil, opError(ctx, "connect", err)
 	}
-	defer conn.Close()
+	cleanups = append(cleanups, func() { _ = conn.Close() })
 	deadline, _ := ctx.Deadline()
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, opError(ctx, "deadline", err)
 	}
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
+	stop = context.AfterFunc(ctx, func() { _ = conn.Close() })
 	dialer := smb2.Dialer{Initiator: &smb2.NTLMInitiator{User: c.config.Username, Password: c.config.Password, Domain: c.config.Domain}}
 	session, err := dialer.DialConn(ctx, conn, c.config.Host)
 	if err != nil {
 		return nil, opError(ctx, "authenticate", err)
 	}
 	session = session.WithContext(ctx)
-	defer session.Logoff()
+	cleanups = append(cleanups, func() { _ = session.Logoff() })
 	share, err := session.Mount(shareName)
 	if err != nil {
 		return nil, opError(ctx, "mount", err)
 	}
 	share = share.WithContext(ctx)
-	defer share.Umount()
+	cleanups = append(cleanups, func() { _ = share.Umount() })
 	file, err := share.Open(fileName)
 	if err != nil {
 		return nil, opError(ctx, "open", err)
 	}
-	defer file.Close()
-	data, err := readBounded(file, c.config.MaxFileBytes)
+	cleanups = append(cleanups, func() { _ = file.Close() })
+	info, err := file.Stat()
 	if err != nil {
-		return nil, opError(ctx, "read", err)
+		return nil, opError(ctx, "stat", err)
 	}
-	return data, nil
+	if info.Size() > c.config.MaxFileBytes {
+		return nil, &OpError{Op: "open", Err: ErrTooLarge}
+	}
+	if info.IsDir() {
+		return nil, &OpError{Op: "open", Err: fs.ErrInvalid}
+	}
+	stream := newStream(ctx, cancel, file, info, c.config.MaxFileBytes, func() { _ = conn.Close() }, func() {
+		for i := len(cleanups) - 2; i >= 0; i-- {
+			cleanups[i]()
+		}
+	})
+	transferred = true
+	context.AfterFunc(ctx, func() { _ = stream.Close() })
+	if err := ctx.Err(); err != nil {
+		_ = stream.Close()
+		return nil, opError(ctx, "open", err)
+	}
+	return stream, nil
 }
 
 type statReader interface {

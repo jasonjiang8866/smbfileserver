@@ -38,6 +38,10 @@ def main():
         (share / 'nested' / '工艺 报表.csv').write_bytes('lot,value\n晶圆,42\n'.encode())
         (share / ('a' * 200 + '.txt')).write_bytes(b'long name\n')
         (share / 'large.bin').write_bytes(bytes(range(256)) * 16384)  # 4 MiB
+        with (share / 'stream.bin').open('wb') as stream:
+            block = bytes(range(256)) * 4096
+            for _ in range(64):
+                stream.write(block)  # 64 MiB without a whole-file fixture allocation.
         (share / 'denied.txt').write_bytes(b'not accessible\n')
         (share / 'denied.txt').chmod(0)
         with socket.socket() as sock:

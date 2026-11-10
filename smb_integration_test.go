@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -474,5 +475,213 @@ func TestSMBIntegrationSharedClientAdmission(t *testing.T) {
 	data, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != 200 || string(data) != "SMB integration fixture\n" {
 		t.Fatalf("recovery: %v", err)
+	}
+}
+
+func TestSMBIntegrationStreaming(t *testing.T) {
+	t.Run("large-encrypted-native-gateway", func(t *testing.T) {
+		cfg := integrationConfig(t)
+		cfg.RequestTimeout = 30 * time.Second
+		cfg.SMBMaxFileBytes = 128 << 20
+		reader := testSMBClient(t, cfg)
+		h, err := newHTTPHandler(cfg, reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := httptest.NewServer(h)
+		defer server.Close()
+		response, err := (&http.Client{Timeout: 35 * time.Second}).Get(server.URL + "/api/v1/smb/encrypted/stream.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != 200 || response.ContentLength != -1 {
+			t.Fatalf("not a streamed response: status=%d length=%d", response.StatusCode, response.ContentLength)
+		}
+		hash := sha256.New()
+		n, err := io.Copy(hash, response.Body)
+		expected := sha256.New()
+		pattern := make([]byte, 256)
+		for i := range pattern {
+			pattern[i] = byte(i)
+		}
+		block := bytes.Repeat(pattern, 4096)
+		for i := 0; i < 64; i++ {
+			_, _ = expected.Write(block)
+		}
+		if err != nil || n != 64<<20 || !bytes.Equal(hash.Sum(nil), expected.Sum(nil)) {
+			t.Fatalf("stream corrupted: bytes=%d err=%v", n, err)
+		}
+		head, err := (&http.Client{Timeout: 5 * time.Second}).Head(server.URL + "/api/v1/smb/encrypted/stream.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		head.Body.Close()
+		if head.StatusCode != 200 || head.ContentLength != 64<<20 {
+			t.Fatal("HEAD metadata failed")
+		}
+	})
+	t.Run("first-bytes-before-SMB-finishes", func(t *testing.T) {
+		cfg := integrationConfig(t)
+		cfg.SMBMaxConcurrentReads = 1
+		proxy := newPausedProxy(t, net.JoinHostPort(cfg.SMBHost, cfg.SMBPort))
+		defer proxy.close()
+		cfg.SMBHost, cfg.SMBPort, _ = net.SplitHostPort(proxy.listener.Addr().String())
+		reader := testSMBClient(t, cfg)
+		h, err := newHTTPHandler(cfg, reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := httptest.NewServer(h)
+		defer server.Close()
+		response, err := (&http.Client{Timeout: 2 * time.Second}).Get(server.URL + "/api/v1/smb/readonly/large.bin")
+		if err != nil {
+			t.Fatalf("HTTP waited for complete SMB file: %v", err)
+		}
+		defer response.Body.Close()
+		prefix := make([]byte, 512)
+		if _, err := io.ReadFull(response.Body, prefix); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-proxy.ready:
+		case <-time.After(time.Second):
+			t.Fatal("SMB transfer did not pause")
+		}
+		for i, b := range prefix {
+			if b != byte(i) {
+				t.Fatal("initial bytes corrupted")
+			}
+		}
+		// Upstream remains paused. Closing HTTP must release the stream's sole slot.
+		response.Body.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		data, err := reader.ReadFile(ctx, "readonly", "hello.txt")
+		if err != nil || string(data) != "SMB integration fixture\n" {
+			t.Fatalf("disconnect did not release slot: %v", err)
+		}
+	})
+	t.Run("idle-stream-timeout-releases-slot", func(t *testing.T) {
+		cfg := integrationConfig(t)
+		cfg.SMBMaxConcurrentReads = 1
+		cfg.RequestTimeout = 300 * time.Millisecond
+		reader := testSMBClient(t, cfg)
+		file, err := reader.Open(context.Background(), "readonly", "large.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		defer cancel()
+		if _, err := reader.Open(ctx, "readonly", "hello.txt"); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("open stream did not retain admission: %v", err)
+		}
+		// No Read/Close on the original stream: its own deadline must reclaim it.
+		time.Sleep(250 * time.Millisecond)
+		next, err := reader.Open(context.Background(), "readonly", "hello.txt")
+		if err != nil {
+			t.Fatalf("idle stream leaked admission: %v", err)
+		}
+		next.Close()
+		if _, err := file.Read(make([]byte, 1)); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expired stream: %v", err)
+		}
+	})
+	t.Run("close-interrupts-stalled-SMB-read", func(t *testing.T) {
+		cfg := integrationConfig(t)
+		cfg.SMBMaxConcurrentReads = 1
+		proxy := newPausedProxy(t, net.JoinHostPort(cfg.SMBHost, cfg.SMBPort))
+		defer proxy.close()
+		cfg.SMBHost, cfg.SMBPort, _ = net.SplitHostPort(proxy.listener.Addr().String())
+		reader := testSMBClient(t, cfg)
+		file, err := reader.Open(context.Background(), "readonly", "large.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		result := make(chan error, 1)
+		go func() { _, err := io.Copy(io.Discard, file); result <- err }()
+		select {
+		case <-proxy.ready:
+		case <-time.After(time.Second):
+			t.Fatal("read not stalled")
+		}
+		closed := make(chan struct{})
+		go func() { file.Close(); close(closed) }()
+		select {
+		case <-closed:
+		case <-time.After(time.Second):
+			t.Fatal("Close hung behind transport")
+		}
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Fatal("partial read reported success")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Read did not stop")
+		}
+		if _, err := reader.ReadFile(context.Background(), "readonly", "hello.txt"); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestSMBIntegrationStreamingUpstreamFailure(t *testing.T) {
+	cfg := integrationConfig(t)
+	proxy := newPausedProxy(t, net.JoinHostPort(cfg.SMBHost, cfg.SMBPort))
+	defer proxy.close()
+	cfg.SMBHost, cfg.SMBPort, _ = net.SplitHostPort(proxy.listener.Addr().String())
+	h, err := newHTTPHandler(cfg, testSMBClient(t, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Get(server.URL + "/api/v1/smb/readonly/large.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	select {
+	case <-proxy.ready:
+	case <-time.After(time.Second):
+		t.Fatal("no pause")
+	}
+	proxy.drop()
+	proxy.unpause()
+	data, err := io.ReadAll(response.Body)
+	if !errors.Is(err, io.ErrUnexpectedEOF) || response.StatusCode != 200 || len(data) >= 4<<20 {
+		t.Fatalf("late failure reported success: n=%d err=%v", len(data), err)
+	}
+}
+
+func TestSMBIntegrationStreamingSlowClient(t *testing.T) {
+	cfg := integrationConfig(t)
+	cfg.RequestTimeout = 500 * time.Millisecond
+	cfg.SMBMaxFileBytes = 128 << 20
+	cfg.SMBMaxConcurrentReads = 1
+	reader := testSMBClient(t, cfg)
+	h, err := newHTTPHandler(cfg, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Get(server.URL + "/api/v1/smb/readonly/stream.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("status=%d", response.StatusCode)
+	}
+	// Leave the response unread: the operation deadline must reclaim SMB resources
+	// even if HTTP is blocked on socket backpressure. No Body.Close until after probe.
+	time.Sleep(650 * time.Millisecond)
+	data, err := reader.ReadFile(context.Background(), "readonly", "hello.txt")
+	if err != nil || string(data) != "SMB integration fixture\n" {
+		t.Fatalf("slow HTTP client retained SMB slot: %v", err)
 	}
 }

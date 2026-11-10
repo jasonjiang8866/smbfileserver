@@ -30,6 +30,13 @@ type FileReader interface {
 	ReadFile(ctx context.Context, share, file string) ([]byte, error)
 }
 
+// FileOpener is the optional streaming capability. The handler prefers Open for
+// single-file requests and closes the returned file on every path. Stat provides
+// opening metadata; readers must enforce their own limits and honor context.
+type FileOpener interface {
+	Open(ctx context.Context, share, file string) (fs.File, error)
+}
+
 // Options configures one handler. Zero values select the documented defaults.
 type Options struct {
 	// RequestTimeout bounds a whole request, including queued batch work (default 30s).
@@ -38,6 +45,12 @@ type Options struct {
 	// MaxBodyBytes limits POST JSON input (default 4 MiB). This does not bound
 	// downloaded file sizes or response memory usage.
 	MaxBodyBytes int64
+	// DisableStreaming explicitly selects ReadFile even if FileOpener is available.
+	DisableStreaming bool
+	// MaxBatchFiles defaults to 100. MaxBatchBytes defaults to 32 MiB of decoded
+	// contents retained in successful batch entries (not JSON or process RSS).
+	MaxBatchFiles int
+	MaxBatchBytes int64
 }
 
 // Handler serves /{share}/{file} (GET/HEAD) and /{share}/batch (GET/HEAD/POST).
@@ -57,7 +70,7 @@ func New(reader FileReader, options Options) (*Handler, error) {
 	if reader == nil {
 		return nil, errors.New("smbhttp: reader is required")
 	}
-	if options.RequestTimeout < 0 || options.MaxBodyBytes < 0 {
+	if options.RequestTimeout < 0 || options.MaxBodyBytes < 0 || options.MaxBatchFiles < 0 || options.MaxBatchBytes < 0 || options.MaxBatchBytes == 1<<63-1 {
 		return nil, errors.New("smbhttp: limits must not be negative")
 	}
 	if options.RequestTimeout == 0 {
@@ -65,6 +78,12 @@ func New(reader FileReader, options Options) (*Handler, error) {
 	}
 	if options.MaxBodyBytes == 0 {
 		options.MaxBodyBytes = 4 << 20
+	}
+	if options.MaxBatchFiles == 0 {
+		options.MaxBatchFiles = 100
+	}
+	if options.MaxBatchBytes == 0 {
+		options.MaxBatchBytes = 32 << 20
 	}
 	return &Handler{reader: reader, options: options}, nil
 }
@@ -103,6 +122,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := ctx.Err(); err != nil {
 		status, message := publicReadError(err)
 		writeError(w, r, status, message)
+		return
+	}
+	if opener, ok := h.reader.(FileOpener); ok && !h.options.DisableStreaming {
+		h.stream(w, r.WithContext(ctx), opener, parts[0], parts[1])
 		return
 	}
 	data, err := h.reader.ReadFile(ctx, parts[0], parts[1])
@@ -161,13 +184,17 @@ func (h *Handler) batch(w http.ResponseWriter, r *http.Request, share string) {
 		writeError(w, r, 400, "no files specified")
 		return
 	}
+	if len(req.Files) > h.options.MaxBatchFiles {
+		writeError(w, r, 413, "too many files")
+		return
+	}
 	for _, file := range req.Files {
 		if strings.TrimSpace(file.FileName) == "" {
 			writeError(w, r, 400, "fileName must not be empty")
 			return
 		}
 	}
-	writeJSON(w, r, 200, readBatch(r.Context(), h.reader, share, req))
+	writeJSON(w, r, 200, readBatch(r.Context(), h.reader, share, req, h.options.MaxBatchBytes))
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, status int, message string) {
@@ -213,7 +240,7 @@ type BatchFileResponse struct {
 	Files []FileResponse `json:"files"`
 }
 
-func readBatch(ctx context.Context, reader FileReader, share string, req BatchFileRequest) BatchFileResponse {
+func readBatch(ctx context.Context, reader FileReader, share string, req BatchFileRequest, maxBytes int64) BatchFileResponse {
 	workers := req.Concurrency
 	if workers <= 0 {
 		workers = 3
@@ -227,6 +254,8 @@ func readBatch(ctx context.Context, reader FileReader, share string, req BatchFi
 	response := BatchFileResponse{Files: make([]FileResponse, len(req.Files))}
 	jobs := make(chan int)
 	var wg sync.WaitGroup
+	var budgetMu sync.Mutex
+	var used int64
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
@@ -234,11 +263,18 @@ func readBatch(ctx context.Context, reader FileReader, share string, req BatchFi
 			for index := range jobs {
 				file := req.Files[index]
 				result := FileResponse{FileName: file.FileName}
-				data, err := readBatchFile(ctx, reader, share, file.FileName)
+				data, err := readBatchFile(ctx, reader, share, file.FileName, maxBytes)
 				if err != nil {
 					_, result.Error = publicReadError(err)
 				} else {
-					result.Content = base64.StdEncoding.EncodeToString(data)
+					budgetMu.Lock()
+					if int64(len(data)) > maxBytes-used {
+						result.Error = "batch byte limit exceeded"
+					} else {
+						used += int64(len(data))
+						result.Content = base64.StdEncoding.EncodeToString(data)
+					}
+					budgetMu.Unlock()
 				}
 				response.Files[index] = result
 			}
@@ -253,7 +289,7 @@ func readBatch(ctx context.Context, reader FileReader, share string, req BatchFi
 	return response
 }
 
-func readBatchFile(ctx context.Context, reader FileReader, share, file string) (data []byte, err error) {
+func readBatchFile(ctx context.Context, reader FileReader, share, file string, maxBytes int64) (data []byte, err error) {
 	// HTTP recovery middleware cannot catch a panic in a separate worker goroutine.
 	defer func() {
 		if recover() != nil {
@@ -264,10 +300,26 @@ func readBatchFile(ctx context.Context, reader FileReader, share, file string) (
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if opener, ok := reader.(FileOpener); ok {
+		stream, err := opener.Open(ctx, share, file)
+		if err != nil {
+			return nil, err
+		}
+		defer stream.Close()
+		data, err := io.ReadAll(io.LimitReader(stream, maxBytes+1))
+		if int64(len(data)) > maxBytes {
+			return nil, batchLimitError{}
+		}
+		return data, err
+	}
 	return reader.ReadFile(ctx, share, file)
 }
 
 func publicReadError(err error) (int, string) {
+	var batchLimit batchLimitError
+	if errors.As(err, &batchLimit) {
+		return 413, "batch byte limit exceeded"
+	}
 	var networkError net.Error
 	var sizeError interface{ SizeLimitExceeded() bool }
 	switch {
@@ -289,3 +341,7 @@ func publicReadError(err error) (int, string) {
 		return 502, "SMB request failed"
 	}
 }
+
+type batchLimitError struct{}
+
+func (batchLimitError) Error() string { return "batch byte limit exceeded" }

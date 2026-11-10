@@ -15,6 +15,9 @@ import (
 
 type Config struct {
 	ListenAddress         string
+	HTTPServer            string
+	MaxBatchFiles         int
+	MaxBatchBytes         int64
 	SMBHost               string
 	SMBPort               string
 	SMBUser               string
@@ -50,11 +53,15 @@ func loadConfig(envFile string, lookup func(string) (string, bool)) (Config, err
 	}
 	cfg := Config{
 		ListenAddress: get("HTTP_ADDR", "", ":3000"),
+		HTTPServer:    get("HTTP_SERVER", "", "nethttp"),
 		SMBHost:       strings.TrimSpace(get("SMB_HOST", "serverIP", "")),
 		SMBPort:       get("SMB_PORT", "", "445"),
 		SMBUser:       get("SMB_USERNAME", "userName", ""),
 		SMBPassword:   get("SMB_PASSWORD", "userPassword", ""),
 		SMBDomain:     get("SMB_DOMAIN", "", ""),
+	}
+	if cfg.HTTPServer != "nethttp" && cfg.HTTPServer != "fiber" {
+		return Config{}, errors.New("HTTP_SERVER must be nethttp or fiber")
 	}
 	for _, field := range []struct{ name, value string }{
 		{"SMB_HOST", cfg.SMBHost}, {"SMB_USERNAME", cfg.SMBUser}, {"SMB_PASSWORD", cfg.SMBPassword},
@@ -95,6 +102,14 @@ func loadConfig(envFile string, lookup func(string) (string, bool)) (Config, err
 		return Config{}, errors.New("SMB_MAX_FILE_BYTES must be a positive integer less than MaxInt64")
 	}
 	cfg.SMBMaxConcurrentReads, cfg.SMBMaxFileBytes = concurrency, maxBytes
+	cfg.MaxBatchFiles, err = strconv.Atoi(get("MAX_BATCH_FILES", "", "100"))
+	if err != nil || cfg.MaxBatchFiles <= 0 {
+		return Config{}, errors.New("MAX_BATCH_FILES must be a positive integer")
+	}
+	cfg.MaxBatchBytes, err = strconv.ParseInt(get("MAX_BATCH_BYTES", "", "33554432"), 10, 64)
+	if err != nil || cfg.MaxBatchBytes <= 0 || cfg.MaxBatchBytes == 1<<63-1 {
+		return Config{}, errors.New("MAX_BATCH_BYTES must be a positive integer less than MaxInt64")
+	}
 	return cfg, nil
 }
 

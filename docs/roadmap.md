@@ -32,10 +32,10 @@ Acceptance: unauthenticated and unauthorized requests are rejected; directory es
 
 ## PR 3 — bounded resources and transfer behavior
 
-- Stream individual files, preserving SMB handle ownership until response completion.
-- Per-client active-read admission, queue wait within the operation timeout, and per-file byte checks (including growth after Stat) are implemented. Add queue-count and batch-total-byte limits; account for retained responses and multiple client instances when claiming a per-Pod memory bound.
-- Preserve the Base64 batch contract only within explicit limits; consider metadata-plus-download URLs for larger work.
-- Verify slow clients and disconnects release handles, connections and concurrency slots; determine whether Fiber streaming supports the needed lifecycle before choosing the implementation.
+- Implemented: client.Open and default native HTTP streaming, with handle ownership until EOF/Close/cancellation, early headers, late-error abort and fixed-size copy buffers. Fiber is an explicit buffered alternative.
+- Per-client active-read admission, queue wait within the operation timeout, and per-file byte checks (including growth after Stat) are implemented. Batch count and retained decoded-byte limits are now implemented. Add queue-count admission; account for retained responses and multiple client instances when claiming a per-Pod memory bound.
+- Base64 batch contract now has explicit count/decoded-content limits; consider metadata-plus-download URLs for larger work.
+- Native streaming tests exercise disconnects, idle stream deadlines, early Close, upstream errors and slow HTTP readers. Keep Fiber buffered until its streaming ownership/disconnect behavior has separate validation.
 - Benchmark connection setup cost before adding a bounded connection pool. Isolate reuse by server and credential identity, and invalidate broken sessions.
 
 Acceptance: memory stays within a declared budget during large transfers and overload; cancellation/failures return resources; overload produces documented responses. Multiply limits by replica count when sizing upstream load.
