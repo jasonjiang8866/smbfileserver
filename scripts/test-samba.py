@@ -29,7 +29,9 @@ def main():
     log = None
     try:
         for name in ('share', 'private', 'state', 'lock', 'cache', 'pid', 'logs', 'ncalrpc'):
-            (root / name).mkdir(mode=0o755 if name == 'share' else 0o700)
+            (root / name).mkdir(mode=0o700 if name == 'private' else 0o755)
+            if name != 'share':
+                subprocess.run(root_command + ['chown', 'root:root', str(root / name)], check=True)
         share = root / 'share'
         (share / 'hello.txt').write_bytes(b'SMB integration fixture\n')
         (share / 'empty.txt').write_bytes(b'')
@@ -90,11 +92,11 @@ def main():
         subprocess.run(['smbd', '--version'], check=True)
         log = (root / 'smbd.log').open('w')
         # Start a dedicated process group; stop only this fixture and its children.
-        process = subprocess.Popen(root_command + ['smbd', '-F', '--no-process-group', '-s', str(config)],
+        process = subprocess.Popen(root_command + ['smbd', '-F', '--no-process-group', '--debug-stdout', '-d', '1', '-s', str(config)],
                                    stdout=log, stderr=log, start_new_session=True)
         for attempt in range(100):
             if process.poll() is not None:
-                raise RuntimeError('isolated smbd exited before readiness')
+                raise RuntimeError(f'isolated smbd exited before readiness (status {process.returncode})')
             try:
                 with socket.create_connection(('127.0.0.1', port), timeout=0.2):
                     break
