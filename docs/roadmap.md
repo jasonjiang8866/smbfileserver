@@ -14,7 +14,9 @@ Target: read existing enterprise file shares from Kubernetes/OpenShift applicati
 
 The backend is now pinned to CloudSoda instead of the original v1 module. An isolated Samba CI harness advances part of the PR 5 interoperability work: signed/encryption-required read-only shares, real reads, directory listing, and controlled transfer failures. Windows SMB, AD/Kerberos and OpenShift acceptance remain outstanding.
 
-Before adding more gateway features, extract public `client` and standard `net/http` handler packages, keep Fiber optional, and move process/configuration wiring into the gateway command. Public APIs should not expose backend-specific types.
+The public `smbhttp` package now supplies the standard `net/http` handler through a backend-independent `FileReader` interface. Its production dependency tree is standard-library-only; Fiber remains in the gateway and adapts the shared handler. Handler construction does not load process configuration or open listeners. Native HTTP disconnect cancellation is covered by unit tests and a real-Samba CI case.
+
+Next, extract the importable CloudSoda client and move process/configuration wiring into a gateway command. Consider a public Fiber adapter separately; the current bridge is gateway wiring. Keep public APIs free of backend-specific types.
 
 ## PR 2 — access boundaries
 

@@ -34,8 +34,8 @@ func TestSMBStalledHandshakeHonorsDeadlineAndClosesConnection(t *testing.T) {
 	cfg := Config{SMBHost: host, SMBPort: port, SMBUser: "reader", SMBPassword: "test", RequestTimeout: 100 * time.Millisecond}
 	start := time.Now()
 	_, err = (&SMBReader{config: cfg}).ReadFile(context.Background(), "images", "file")
-	status, _ := publicReadError(err)
-	if status != 504 || time.Since(start) > 2*time.Second {
+	var timeout net.Error
+	if !(errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout())) || time.Since(start) > 2*time.Second {
 		t.Fatalf("handshake was not bounded: %v", err)
 	}
 	select {

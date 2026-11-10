@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jasonjiang8866/smbfileserver/smbhttp"
 	"io"
 	"io/fs"
 	"net/http"
@@ -56,7 +57,7 @@ func TestProductionBatchRoutes(t *testing.T) {
 			if resp.StatusCode != 200 {
 				t.Fatalf("status %d", resp.StatusCode)
 			}
-			var result BatchFileResponse
+			var result smbhttp.BatchFileResponse
 			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 				t.Fatal(err)
 			}
@@ -142,7 +143,7 @@ func TestRequestDeadline(t *testing.T) {
 		t.Fatalf("got %d", resp.StatusCode)
 	}
 	resp := request(t, app, "POST", "/api/v1/smb/images/batch", `{"files":[{"fileName":"a"},{"fileName":"b"},{"fileName":"c"}],"concurrency":1}`)
-	var result BatchFileResponse
+	var result smbhttp.BatchFileResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
@@ -168,5 +169,31 @@ func TestWorkerPanicIsContained(t *testing.T) {
 	resp = request(t, app, "GET", "/api/v1/smb/images/a", "")
 	if resp.StatusCode != 500 {
 		t.Fatalf("got %d", resp.StatusCode)
+	}
+}
+
+func TestGatewayStandardHTTPAdapter(t *testing.T) {
+	app := newApp(testConfig(), readerFunc(func(_ context.Context, share, file string) ([]byte, error) {
+		if share != "reports" || file != "工艺 report.txt" {
+			t.Errorf("wrong decoded path: %q/%q", share, file)
+		}
+		return []byte("report"), nil
+	}), context.Background())
+	for _, method := range []string{"GET", "HEAD"} {
+		resp := request(t, app, method, "/api/v1/smb/reports/工艺%20report.txt", "")
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 || resp.ContentLength != 6 {
+			t.Fatalf("%s status=%d length=%d", method, resp.StatusCode, resp.ContentLength)
+		}
+		if method == "GET" && string(body) != "report" {
+			t.Fatal("adapter changed body")
+		}
+		if method == "HEAD" && len(body) != 0 {
+			t.Fatal("HEAD included body")
+		}
+	}
+	resp := request(t, app, "DELETE", "/api/v1/smb/reports/file", "")
+	if resp.StatusCode != 405 || resp.Header.Get("Allow") != "GET, HEAD" {
+		t.Fatal("method contract lost in adapter")
 	}
 }
