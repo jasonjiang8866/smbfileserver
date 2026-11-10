@@ -10,6 +10,12 @@ Target: read existing enterprise file shares from Kubernetes/OpenShift applicati
 - Replace operational panics with bounded errors; register cleanup at acquisition, apply contexts to session/share operations, and handle signals.
 - Exercise route failures, cancellation, configuration precedence and process lifecycle. Do not label fake-reader or stalled-TCP tests as live SMB validation.
 
+## Additional foundation work — CloudSoda migration
+
+The backend is now pinned to CloudSoda instead of the original v1 module. An isolated Samba CI harness advances part of the PR 5 interoperability work: signed/encryption-required read-only shares, real reads, directory listing, and controlled transfer failures. Windows SMB, AD/Kerberos and OpenShift acceptance remain outstanding.
+
+Before adding more gateway features, extract public `client` and standard `net/http` handler packages, keep Fiber optional, and move process/configuration wiring into the gateway command. Public APIs should not expose backend-specific types.
+
 ## PR 2 — access boundaries
 
 - Add rotatable service authentication. Keep long-lived service credentials out of browser code; initially place a business backend or authentication proxy in front.

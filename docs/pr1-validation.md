@@ -1,4 +1,6 @@
-# PR 1 validation
+# Initial reliability foundation validation
+
+Historical results for the first PR #2 commit (`8cfe119`). The subsequent CloudSoda migration supersedes the dependency findings below; see [current migration notes](cloudsoda-migration.md) and the PR checks for current evidence.
 
 Baseline: `3684852beddaeb737a7fab8320e4da6db0f1a58e` (main).
 

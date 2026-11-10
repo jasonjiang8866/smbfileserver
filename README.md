@@ -2,11 +2,11 @@
 
 A lightweight, read-only **SMB-to-HTTP gateway** written in Go. Applications fetch files from an existing Windows/Samba share through HTTP without mounting SMB inside their containers. The long-term target is Kubernetes and OpenShift application workloads.
 
-This repository currently provides the reliability foundation, **not a production deployment**. Authentication, share/path authorization, global resource limits, streaming and container manifests are planned in [the roadmap](docs/roadmap.md). Until those controls exist, run only in a trusted development environment with a dedicated read-only SMB account. No live SMB interoperability or OpenShift certification is implied by the unit tests.
+This repository currently provides the reliability foundation, **not a production deployment**. Authentication, share/path authorization, global resource limits, streaming and container manifests are planned in [the roadmap](docs/roadmap.md). Until those controls exist, run only in a trusted development environment with a dedicated read-only SMB account. CI includes an isolated Samba interoperability fixture; Windows SMB, AD/Kerberos and actual OpenShift deployment remain unverified.
 
 ## Build and run
 
-Use Go 1.26 or newer. Dependencies and checksums are committed.
+Use Go 1.26 or newer. Dependencies and checksums are committed. The SMB backend is `github.com/cloudsoda/go-smb2`, pinned to `v0.0.0-20261105190815-95be04a983b8`; the original `hirochachacha/go-smb2` module is no longer used. See [migration notes](docs/cloudsoda-migration.md).
 
 ```sh
 go mod download
@@ -73,7 +73,15 @@ go mod verify
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 ```
 
-Tests exercise production routes with an injected reader, configuration precedence, error redaction, timeouts, batch ordering and worker panic containment. Local TCP tests exercise a stalled SMB negotiation, transport cleanup and HTTP shutdown. These are not a replacement for the planned Samba/Windows SMB integration suite.
+Tests exercise production routes with an injected reader, configuration precedence, error redaction, timeouts, batch ordering and worker panic containment. Local TCP tests exercise a stalled SMB negotiation, transport cleanup and HTTP shutdown. The separate integration suite starts an isolated Samba server with mandatory signing, a read-only share and an encryption-required share. It verifies reads, directory enumeration, permission/credential failures, and transfer interruption/recovery through a loopback fault proxy. This does not validate Windows SMB or AD/Kerberos.
+
+On a disposable Linux development/CI host with Samba tools and root or passwordless sudo:
+
+```sh
+python3 scripts/test-samba.py
+```
+
+The harness uses synthetic data and credentials, binds only to loopback on a temporary port, keeps its own Samba configuration/passdb/state, and cleans up its process group and temporary files. It does not mount a filesystem or need enterprise secrets. Default `go test` does not require Samba; CI runs the integration harness as a mandatory separate job.
 
 See [the roadmap](docs/roadmap.md) for the remaining v0.1 acceptance gates.
 

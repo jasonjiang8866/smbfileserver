@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/hirochachacha/go-smb2"
+	"github.com/cloudsoda/go-smb2"
 )
 
 // FileReader is the narrow boundary shared by production routes and their tests.
@@ -36,7 +36,7 @@ func (r *SMBReader) ReadFile(parent context.Context, shareName, fileName string)
 	dialer := smb2.Dialer{Initiator: &smb2.NTLMInitiator{
 		User: r.config.SMBUser, Password: r.config.SMBPassword, Domain: r.config.SMBDomain,
 	}}
-	session, err := dialer.DialContext(ctx, conn)
+	session, err := dialer.DialConn(ctx, conn, r.config.SMBHost)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate SMB: %w", smbError(ctx, err))
 	}
@@ -55,14 +55,10 @@ func (r *SMBReader) ReadFile(parent context.Context, shareName, fileName string)
 	return data, nil
 }
 
-// The pinned SMB library's context/transport wrappers predate errors.Unwrap.
+// CloudSoda returns context errors directly; its transport wrapper still lacks Unwrap.
 func smbError(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
-	}
-	var ce *smb2.ContextError
-	if errors.As(err, &ce) {
-		return ce.Err
 	}
 	var te *smb2.TransportError
 	if errors.As(err, &te) {

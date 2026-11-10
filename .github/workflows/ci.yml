@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -39,3 +39,19 @@ jobs:
       - name: Check reachable vulnerabilities
         if: matrix.go == '1.27.x'
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  samba:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.27.x"
+          cache: true
+      - name: Install Samba fixture tools
+        run: |
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y samba
+      - name: Verify real SMB reads and failure recovery
+        run: python3 scripts/test-samba.py
