@@ -1,6 +1,6 @@
 # Embedding `smbhttp`
 
-`New(reader FileReader, options Options) (*Handler, error)` creates a concurrent `http.Handler`. The handler receives an already initialized reader; it does not own or close that reader. A reader must support concurrent calls, stop promptly on context cancellation, and return buffered file contents. The public contract exposes no Fiber or CloudSoda types.
+`New(reader FileReader, options Options) (*Handler, error)` creates a concurrent `http.Handler`. A public `*client.Client` implements this reader interface directly. The handler receives an already initialized reader; it does not own or close that reader. A reader must support concurrent calls, stop promptly on context cancellation, and return buffered file contents. The public contract exposes no Fiber or CloudSoda types.
 
 ## Mounting and routes
 
@@ -26,15 +26,15 @@ The host must authenticate and authorize callers and constrain shares/paths befo
 
 The host server owns HTTP header/body-read/write/idle timeouts and graceful shutdown. The handler cannot forcibly stop a reader that ignores its context, and its context timeout alone cannot interrupt a stalled HTTP body read. Set server read timeouts. No background worker persists after a request completes.
 
-Native net/http request cancellation, including a disconnected HTTP client, reaches the reader. The Fiber gateway uses a thin adapter and explicitly combines its shutdown context with the adapted request context. Fiber v2 cannot supply the same disconnect signal; the adapter does not promise it.
+Native net/http request cancellation, including a disconnected HTTP client, reaches the reader. The Fiber gateway uses a thin adapter with an application-owned shutdown context, avoiding asynchronous cancellation against Fiber's pooled RequestCtx. Fiber v2 cannot supply the same disconnect signal; the adapter does not promise it.
 
 ## Results and limits
 
 `FileRequest`, `BatchFileRequest`, `FileResponse` and `BatchFileResponse` describe the existing JSON contract. Batch output retains order and duplicates, defaults to 3 workers and caps requested concurrency at 10. Canceled queued work does not call the reader. A valid batch returns 200 with per-item errors, even if all reads fail. A backend panic becomes a sanitized 500 for a single read, or a per-item generic error inside a batch.
 
-Wrap `fs.ErrNotExist`, `fs.ErrPermission`, `context.Canceled` or `context.DeadlineExceeded` to preserve HTTP classification. Network timeouts map to 504; unknown backend errors map to a generic 502. Raw backend text is never included in HTTP errors.
+Wrap `fs.ErrNotExist`, `fs.ErrPermission`, `context.Canceled` or `context.DeadlineExceeded` to preserve HTTP classification. `fs.ErrInvalid` maps to 400. An error implementing `SizeLimitExceeded() bool` and returning true maps to 413; the public client uses that marker for `client.ErrTooLarge`, preserving the handler's standard-library-only production dependency tree. Network timeouts map to 504; unknown backend errors map to a generic 502. Raw backend text is never included in HTTP errors.
 
-File responses are fully buffered and Base64 expands batch memory use. Body size is an input limit, not an output/file limit. No streaming, Range/conditional reads, global concurrency bound, batch-count cap or authentication mechanism is added in this PR. The dependency boundary and lifecycle contract are intended to support those additions without binding importers to the gateway.
+File responses are fully buffered and Base64 expands batch memory use. Body size is an input limit, not an output/file limit. The handler itself adds no streaming, Range/conditional reads, global concurrency bound, batch-count cap or authentication mechanism. The public client supplies a per-instance active-read cap and per-file byte cap when injected; a custom reader defines its own resource policy. The dependency boundary and lifecycle contract are intended to support those additions without binding importers to the gateway.
 
 ## Verification
 

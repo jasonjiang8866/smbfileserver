@@ -30,7 +30,11 @@ func run() error {
 	defer stop()
 	requests, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	app := newApp(cfg, &SMBReader{config: cfg}, requests)
+	reader, err := newSMBClient(cfg)
+	if err != nil {
+		return fmt.Errorf("SMB client configuration: %w", err)
+	}
+	app := newApp(cfg, reader, requests)
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("HTTP listen: %w", err)

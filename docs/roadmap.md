@@ -16,7 +16,9 @@ The backend is now pinned to CloudSoda instead of the original v1 module. An iso
 
 The public `smbhttp` package now supplies the standard `net/http` handler through a backend-independent `FileReader` interface. Its production dependency tree is standard-library-only; Fiber remains in the gateway and adapts the shared handler. Handler construction does not load process configuration or open listeners. Native HTTP disconnect cancellation is covered by unit tests and a real-Samba CI case.
 
-Next, extract the importable CloudSoda client and move process/configuration wiring into a gateway command. Consider a public Fiber adapter separately; the current bridge is gateway wiring. Keep public APIs free of backend-specific types.
+The public `client` package now supplies reusable read-only CloudSoda access: validated configuration, whole-operation timeouts, per-instance active-read admission, per-file byte limits, resource cleanup and backend-independent error categories. The gateway constructs one client for all requests. See [added value and limits](client.md).
+
+Next, move process/configuration wiring into a gateway command and complete the access-boundary work. Consider a public Fiber adapter separately; the current bridge is gateway wiring. Public APIs expose no CloudSoda types.
 
 ## PR 2 — access boundaries
 
@@ -31,7 +33,7 @@ Acceptance: unauthenticated and unauthorized requests are rejected; directory es
 ## PR 3 — bounded resources and transfer behavior
 
 - Stream individual files, preserving SMB handle ownership until response completion.
-- Bound global per-Pod concurrency, queue length/wait time, individual file size and batch total bytes. Recheck actual bytes when remote files grow during reads.
+- Per-client active-read admission, queue wait within the operation timeout, and per-file byte checks (including growth after Stat) are implemented. Add queue-count and batch-total-byte limits; account for retained responses and multiple client instances when claiming a per-Pod memory bound.
 - Preserve the Base64 batch contract only within explicit limits; consider metadata-plus-download URLs for larger work.
 - Verify slow clients and disconnects release handles, connections and concurrency slots; determine whether Fiber streaming supports the needed lifecycle before choosing the implementation.
 - Benchmark connection setup cost before adding a bounded connection pool. Isolate reuse by server and credential identity, and invalidate broken sessions.

@@ -20,7 +20,7 @@ func TestConfigEnvironmentOnlyAndLegacy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.SMBHost != "files.example.test" || cfg.SMBPassword != "secret" || cfg.RequestTimeout != 30*time.Second || cfg.ListenAddress != ":3000" {
+		if cfg.SMBHost != "files.example.test" || cfg.SMBPassword != "secret" || cfg.RequestTimeout != 30*time.Second || cfg.ListenAddress != ":3000" || cfg.SMBMaxConcurrentReads != 8 || cfg.SMBMaxFileBytes != 32<<20 {
 			t.Fatalf("unexpected defaults (credentials omitted)")
 		}
 	}
@@ -54,6 +54,8 @@ func TestConfigValidation(t *testing.T) {
 		{"SMB_PORT", "0"}, {"SMB_PORT", "65536"}, {"HTTP_ADDR", ":abc"},
 		{"REQUEST_TIMEOUT", "0s"}, {"REQUEST_TIMEOUT", "-1s"}, {"REQUEST_TIMEOUT", "11m"},
 		{"SHUTDOWN_TIMEOUT", "bad"},
+		{"SMB_MAX_CONCURRENT_READS", "0"}, {"SMB_MAX_CONCURRENT_READS", "-1"}, {"SMB_MAX_CONCURRENT_READS", "abc"},
+		{"SMB_MAX_FILE_BYTES", "0"}, {"SMB_MAX_FILE_BYTES", "-1"}, {"SMB_MAX_FILE_BYTES", "9223372036854775807"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
@@ -82,5 +84,21 @@ func TestMalformedDotenvDoesNotLeakValue(t *testing.T) {
 	_, err := loadConfig(path, envLookup(validEnv()))
 	if err == nil || strings.Contains(err.Error(), "secret-never-log") {
 		t.Fatalf("expected sanitized parse error, got %v", err)
+	}
+}
+
+func TestClientLimitsConfig(t *testing.T) {
+	env := validEnv()
+	env["SMB_MAX_FILE_BYTES"] = "1048576"
+	env["SMB_MAX_CONCURRENT_READS"] = "2"
+	cfg, err := loadConfig(filepath.Join(t.TempDir(), "none"), envLookup(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SMBMaxFileBytes != 1048576 || cfg.SMBMaxConcurrentReads != 2 {
+		t.Fatal("limits not applied")
+	}
+	if _, err := newSMBClient(cfg); err != nil {
+		t.Fatal(err)
 	}
 }

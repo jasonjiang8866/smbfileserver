@@ -36,6 +36,13 @@ jobs:
       - name: Verify handler dependency boundary
         run: |
           test -z "$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/jasonjiang8866/smbfileserver/smbhttp")}}{{.ImportPath}}{{end}}' ./smbhttp)"
+      - name: Verify client has no gateway dependencies
+        run: |
+          go list -deps -f '{{.ImportPath}}' ./client > /tmp/client-dependencies
+          if grep -Eq '^(github.com/gofiber/|github.com/joho/godotenv|github.com/jasonjiang8866/smbfileserver/smbhttp)' /tmp/client-dependencies; then
+            cat /tmp/client-dependencies
+            exit 1
+          fi
       - run: go vet -tags=integration ./...
       - run: go test -race -count=1 ./...
       - run: go build -trimpath -o /tmp/smbfileserver .
