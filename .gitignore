@@ -1,7 +1,5 @@
 setup.cmd
 *.exe
-go.mod
-go.sum
 .env
 
 # Compiled binary
