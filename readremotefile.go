@@ -1,60 +1,68 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net"
 
-	"github.com/hirochachacha/go-smb2"
+	"github.com/cloudsoda/go-smb2"
 )
 
-type User struct {
-	serverName   string
-	serverIP     string
-	userName     string
-	userPassword string
+// FileReader is the narrow boundary shared by production routes and their tests.
+// Implementations must honor cancellation and support concurrent calls.
+type FileReader interface {
+	ReadFile(context.Context, string, string) ([]byte, error)
 }
 
-func connectSMBserver(user User) (*smb2.Session, net.Conn) {
-	// connect to SMB server
-	conn, err := net.Dial("tcp", user.serverIP+":445")
+type SMBReader struct{ config Config }
+
+func (r *SMBReader) ReadFile(parent context.Context, shareName, fileName string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, r.config.RequestTimeout)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(r.config.SMBHost, r.config.SMBPort))
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("connect SMB: %w", err)
 	}
-
-	d := &smb2.Dialer{
-		Initiator: &smb2.NTLMInitiator{
-			User:     user.userName,
-			Password: user.userPassword,
-		},
+	// Register cleanup immediately: authentication and mounting may both fail.
+	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("set SMB deadline: %w", err)
 	}
-
-	s, err := d.Dial(conn)
-
+	// Cancellation must also interrupt transport I/O, including stalled cleanup.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	dialer := smb2.Dialer{Initiator: &smb2.NTLMInitiator{
+		User: r.config.SMBUser, Password: r.config.SMBPassword, Domain: r.config.SMBDomain,
+	}}
+	session, err := dialer.DialConn(ctx, conn, r.config.SMBHost)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("authenticate SMB: %w", smbError(ctx, err))
 	}
-
-	return s, conn
+	session = session.WithContext(ctx)
+	defer session.Logoff()
+	share, err := session.Mount(shareName)
+	if err != nil {
+		return nil, fmt.Errorf("mount SMB share: %w", smbError(ctx, err))
+	}
+	share = share.WithContext(ctx)
+	defer share.Umount()
+	data, err := share.ReadFile(fileName)
+	if err != nil {
+		return nil, fmt.Errorf("read SMB file: %w", smbError(ctx, err))
+	}
+	return data, nil
 }
 
-func getMount(s *smb2.Session, shareName string) *smb2.Share {
-	// connect to share
-	m, err := s.Mount(shareName)
-	if err != nil {
-		panic(err)
+// CloudSoda returns context errors directly; its transport wrapper still lacks Unwrap.
+func smbError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-
-	return m
-}
-
-func readFile(s *smb2.Share, fileName string) []byte {
-	fileBytes, err := s.ReadFile(fileName)
-	if err != nil {
-		panic(err)
+	var te *smb2.TransportError
+	if errors.As(err, &te) {
+		return te.Err
 	}
-	return fileBytes
-}
-
-func readFileWithError(s *smb2.Share, fileName string) ([]byte, error) {
-	fileBytes, err := s.ReadFile(fileName)
-	return fileBytes, err
+	return err
 }
