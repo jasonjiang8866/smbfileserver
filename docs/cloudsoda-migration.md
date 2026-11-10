@@ -1,5 +1,7 @@
 # CloudSoda SMB backend migration
 
+Historical PR #2 migration record. The public handler and client have since been extracted; see [client behavior and current resource limits](client.md) and [HTTP embedding](http-handler.md).
+
 ## Selected dependency and API changes
 
 - Backend: `github.com/cloudsoda/go-smb2 v0.0.0-20261105190815-95be04a983b8` (commit `95be04a983b8770c7255d547aa02ee384e9882c7`). Pin this pseudo-version and its checksums; do not float to `main`.

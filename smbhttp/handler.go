@@ -23,7 +23,9 @@ import (
 // FileReader reads one file from a share. Implementations must support concurrent
 // calls and honor ctx cancellation. The caller owns the reader's lifecycle.
 // Return errors wrapping fs.ErrNotExist, fs.ErrPermission or context errors to
-// preserve HTTP error classification. Other errors become a sanitized 502.
+// preserve HTTP error classification. fs.ErrInvalid maps to 400. Errors with a
+// SizeLimitExceeded() bool method returning true map to 413. Other errors become
+// a sanitized 502; no SMB backend import is required for classification.
 type FileReader interface {
 	ReadFile(ctx context.Context, share, file string) ([]byte, error)
 }
@@ -267,6 +269,7 @@ func readBatchFile(ctx context.Context, reader FileReader, share, file string) (
 
 func publicReadError(err error) (int, string) {
 	var networkError net.Error
+	var sizeError interface{ SizeLimitExceeded() bool }
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return 504, "SMB request timed out"
@@ -274,6 +277,10 @@ func publicReadError(err error) (int, string) {
 		return 503, "request canceled"
 	case errors.As(err, &networkError) && networkError.Timeout():
 		return 504, "SMB request timed out"
+	case errors.As(err, &sizeError) && sizeError.SizeLimitExceeded():
+		return 413, "file size limit exceeded"
+	case errors.Is(err, fs.ErrInvalid):
+		return 400, "invalid file or share name"
 	case errors.Is(err, fs.ErrNotExist):
 		return 404, "file or share not found"
 	case errors.Is(err, fs.ErrPermission):

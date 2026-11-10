@@ -12,7 +12,7 @@ import (
 	"github.com/jasonjiang8866/smbfileserver/smbhttp"
 )
 
-func newApp(cfg Config, reader FileReader, root context.Context) *fiber.App {
+func newApp(cfg Config, reader smbhttp.FileReader, root context.Context) *fiber.App {
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		ReadTimeout:           10 * time.Second,
@@ -37,17 +37,11 @@ func newApp(cfg Config, reader FileReader, root context.Context) *fiber.App {
 		panic(err)
 	} // Gateway configuration is validated before startup.
 	mounted := http.StripPrefix("/api/v1/smb", handler)
-	// Preserve the gateway's graceful-shutdown cancellation independently of the
-	// adapter's request context. Fiber v2 still cannot report client disconnects.
+	// fasthttp RequestCtx is pooled. Deriving a Go cancelCtx from it can leave
+	// cancellation propagation reading its values after Fiber recycles it.
+	// Fiber has no per-request disconnect signal; use the application-owned root.
 	bridge := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithCancel(r.Context())
-		stop := context.AfterFunc(root, cancel)
-		defer stop()
-		defer cancel()
-		if root.Err() != nil {
-			cancel()
-		}
-		mounted.ServeHTTP(w, r.WithContext(ctx))
+		mounted.ServeHTTP(w, r.WithContext(root))
 	})
 	app.Use("/api/v1/smb", adaptor.HTTPHandler(bridge))
 	return app

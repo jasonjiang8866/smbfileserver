@@ -298,3 +298,24 @@ func TestPathDecodedOnce(t *testing.T) {
 		t.Fatal("encoded slash reached reader")
 	}
 }
+
+type tooLargeError struct{}
+
+func (tooLargeError) Error() string           { return "backend private details" }
+func (tooLargeError) SizeLimitExceeded() bool { return true }
+func TestSizeLimitAndInvalidInputErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err     error
+		status  int
+		message string
+	}{
+		{fmt.Errorf("private: %w", tooLargeError{}), 413, "file size limit exceeded"},
+		{fs.ErrInvalid, 400, "invalid file or share name"},
+	} {
+		h := handler(t, readerFunc(func(context.Context, string, string) ([]byte, error) { return nil, tc.err }), smbhttp.Options{})
+		w := call(h, "GET", "/s/f", "")
+		if w.Code != tc.status || w.Body.String() != `{"error":"`+tc.message+`"}` {
+			t.Fatal(w)
+		}
+	}
+}

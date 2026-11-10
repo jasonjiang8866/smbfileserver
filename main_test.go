@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jasonjiang8866/smbfileserver/client"
 )
 
 type readerFunc func(context.Context, string, string) ([]byte, error)
@@ -196,4 +197,13 @@ func TestGatewayStandardHTTPAdapter(t *testing.T) {
 	if resp.StatusCode != 405 || resp.Header.Get("Allow") != "GET, HEAD" {
 		t.Fatal("method contract lost in adapter")
 	}
+}
+
+func testSMBClient(t *testing.T, cfg Config) *client.Client {
+	t.Helper()
+	c, err := newSMBClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }

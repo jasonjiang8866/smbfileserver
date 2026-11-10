@@ -9,18 +9,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jasonjiang8866/smbfileserver/client"
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	ListenAddress   string
-	SMBHost         string
-	SMBPort         string
-	SMBUser         string
-	SMBPassword     string
-	SMBDomain       string
-	RequestTimeout  time.Duration
-	ShutdownTimeout time.Duration
+	ListenAddress         string
+	SMBHost               string
+	SMBPort               string
+	SMBUser               string
+	SMBPassword           string
+	SMBDomain             string
+	RequestTimeout        time.Duration
+	ShutdownTimeout       time.Duration
+	SMBMaxConcurrentReads int
+	SMBMaxFileBytes       int64
 }
 
 // Read an optional dotenv file once. Explicit environment values take precedence.
@@ -83,10 +86,30 @@ func loadConfig(envFile string, lookup func(string) (string, bool)) (Config, err
 		}
 		*field.target = d
 	}
+	concurrency, err := strconv.Atoi(get("SMB_MAX_CONCURRENT_READS", "", strconv.Itoa(client.DefaultMaxConcurrentReads)))
+	if err != nil || concurrency <= 0 {
+		return Config{}, errors.New("SMB_MAX_CONCURRENT_READS must be a positive integer")
+	}
+	maxBytes, err := strconv.ParseInt(get("SMB_MAX_FILE_BYTES", "", strconv.FormatInt(client.DefaultMaxFileBytes, 10)), 10, 64)
+	if err != nil || maxBytes <= 0 || maxBytes == 1<<63-1 {
+		return Config{}, errors.New("SMB_MAX_FILE_BYTES must be a positive integer less than MaxInt64")
+	}
+	cfg.SMBMaxConcurrentReads, cfg.SMBMaxFileBytes = concurrency, maxBytes
 	return cfg, nil
 }
 
 func validPort(value string) bool {
 	p, err := strconv.Atoi(value)
 	return err == nil && p > 0 && p <= 65535
+}
+
+// Construct exactly one client at startup so admission is shared by all requests.
+func newSMBClient(cfg Config) (*client.Client, error) {
+	port, err := strconv.Atoi(cfg.SMBPort)
+	if err != nil {
+		return nil, errors.New("SMB_PORT must be an integer")
+	}
+	return client.New(client.Config{Host: cfg.SMBHost, Port: port, Username: cfg.SMBUser,
+		Password: cfg.SMBPassword, Domain: cfg.SMBDomain, Timeout: cfg.RequestTimeout,
+		MaxConcurrentReads: cfg.SMBMaxConcurrentReads, MaxFileBytes: cfg.SMBMaxFileBytes})
 }
