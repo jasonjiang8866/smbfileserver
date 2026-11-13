@@ -322,6 +322,7 @@ func publicReadError(err error) (int, string) {
 	}
 	var networkError net.Error
 	var sizeError interface{ SizeLimitExceeded() bool }
+	var busyError interface{ Overloaded() bool }
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return 504, "SMB request timed out"
@@ -329,6 +330,8 @@ func publicReadError(err error) (int, string) {
 		return 503, "request canceled"
 	case errors.As(err, &networkError) && networkError.Timeout():
 		return 504, "SMB request timed out"
+	case errors.As(err, &busyError) && busyError.Overloaded():
+		return 503, "SMB reader busy"
 	case errors.As(err, &sizeError) && sizeError.SizeLimitExceeded():
 		return 413, "file size limit exceeded"
 	case errors.Is(err, fs.ErrInvalid):

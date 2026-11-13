@@ -23,6 +23,10 @@ const (
 	DefaultTimeout = 30 * time.Second
 	// DefaultMaxConcurrentReads bounds active operations on one Client instance.
 	DefaultMaxConcurrentReads = 8
+	// DefaultMaxQueuedReads bounds calls waiting for an active slot.
+	DefaultMaxQueuedReads = 32
+	// DefaultQueueTimeout bounds admission wait, within the total operation budget.
+	DefaultQueueTimeout = 5 * time.Second
 	// DefaultMaxFileBytes bounds the contents of one successfully returned file.
 	DefaultMaxFileBytes int64 = 32 << 20
 )
@@ -38,6 +42,8 @@ type Config struct {
 	Domain             string
 	Timeout            time.Duration
 	MaxConcurrentReads int
+	MaxQueuedReads     int
+	QueueTimeout       time.Duration
 	MaxFileBytes       int64
 }
 
@@ -45,8 +51,9 @@ type Config struct {
 // Fiber. Construct it with New; the zero value is not usable. There is no Close
 // method: ReadFile owns cleanup; callers of Open close each returned stream.
 type Client struct {
-	config Config
-	slots  chan struct{}
+	config  Config
+	slots   chan struct{}
+	waiters chan struct{}
 }
 
 // New validates configuration without contacting the SMB server. Host must be a
@@ -75,6 +82,12 @@ func New(config Config) (*Client, error) {
 	if config.MaxConcurrentReads < 0 {
 		return nil, errors.New("client: MaxConcurrentReads must not be negative")
 	}
+	if config.MaxQueuedReads < 0 {
+		return nil, errors.New("client: MaxQueuedReads must not be negative")
+	}
+	if config.QueueTimeout < 0 {
+		return nil, errors.New("client: QueueTimeout must not be negative")
+	}
 	if config.MaxFileBytes < 0 || config.MaxFileBytes == math.MaxInt64 {
 		return nil, errors.New("client: MaxFileBytes must be nonnegative and less than MaxInt64")
 	}
@@ -87,7 +100,13 @@ func New(config Config) (*Client, error) {
 	if config.MaxFileBytes == 0 {
 		config.MaxFileBytes = DefaultMaxFileBytes
 	}
-	return &Client{config: config, slots: make(chan struct{}, config.MaxConcurrentReads)}, nil
+	if config.MaxQueuedReads == 0 {
+		config.MaxQueuedReads = DefaultMaxQueuedReads
+	}
+	if config.QueueTimeout == 0 {
+		config.QueueTimeout = DefaultQueueTimeout
+	}
+	return &Client{config: config, slots: make(chan struct{}, config.MaxConcurrentReads), waiters: make(chan struct{}, config.MaxQueuedReads)}, nil
 }
 
 // ReadFile is the buffered convenience API built on Open. It returns the whole
@@ -133,12 +152,10 @@ func (c *Client) Open(parent context.Context, shareName, fileName string) (fs.Fi
 	if strings.TrimSpace(shareName) == "" || strings.ContainsAny(shareName, "/\\\x00") || strings.TrimSpace(fileName) == "" || strings.ContainsRune(fileName, 0) {
 		return nil, &OpError{Op: "validate", Err: fs.ErrInvalid}
 	}
-	select {
-	case c.slots <- struct{}{}:
-		cleanups = append(cleanups, func() { <-c.slots })
-	case <-ctx.Done():
-		return nil, opError(ctx, "admit", ctx.Err())
+	if err := c.acquire(ctx); err != nil {
+		return nil, err
 	}
+	cleanups = append(cleanups, func() { <-c.slots })
 	if err := ctx.Err(); err != nil {
 		return nil, opError(ctx, "admit", err)
 	}

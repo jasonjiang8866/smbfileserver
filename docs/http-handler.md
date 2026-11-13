@@ -39,7 +39,7 @@ Native net/http request cancellation, including a disconnected HTTP client, reac
 
 Wrap `fs.ErrNotExist`, `fs.ErrPermission`, `context.Canceled` or `context.DeadlineExceeded` to preserve HTTP classification. `fs.ErrInvalid` maps to 400. An error implementing `SizeLimitExceeded() bool` and returning true maps to 413; the public client uses that marker for `client.ErrTooLarge`, preserving the handler's standard-library-only production dependency tree. Network timeouts map to 504; unknown backend errors map to a generic 502. Raw backend text is never included in HTTP errors.
 
-Single-file responses stream when FileOpener is available. Batch responses and ReadFile-only fallback are buffered; Base64 expands batch memory use. Body size is an input limit, not an output/file limit. Range/conditional requests, global request/queue admission and authentication remain separate work. The public client supplies a per-instance active-read cap and per-file byte cap when injected; a custom reader defines its own resource policy. The dependency boundary and lifecycle contract are intended to support those additions without binding importers to the gateway.
+Single-file responses stream when FileOpener is available. Batch responses and ReadFile-only fallback are buffered; Base64 expands batch memory use. Body size is an input limit, not an output/file limit. Range/conditional requests, global request/queue admission and authentication remain separate work. The public client supplies per-instance active-read and queue caps, a maximum admission wait and a per-file byte cap when injected; a custom reader defines its own resource policy. The dependency boundary and lifecycle contract are intended to support those additions without binding importers to the gateway.
 
 ## Verification
 
@@ -47,3 +47,7 @@ Single-file responses stream when FileOpener is available. Batch responses and R
 - Existing Fiber gateway route and graceful-shutdown tests run unchanged in intent against the shared handler.
 - CI enforces the standard-library-only production dependency tree of `smbhttp`, recursively formats all Go packages, and runs Go 1.26/1.27 race tests, vet, builds and vulnerability scans.
 - The Samba job includes an actual native HTTP disconnect after a transfer has reached 64 KiB, checks cancellation reaches CloudSoda, then reads from an encryption-required share through the same handler/reader. Consult the PR's CI run for executed results; Windows/AD and OpenShift are still separate acceptance work.
+
+## Overload classification
+
+Errors wrapping an `Overloaded() bool` marker returning true map to HTTP 503 with `SMB reader busy` before response headers. This covers the public client's `ErrBusy` (full queue or queue wait timeout) and custom readers without adding an import dependency. GET and HEAD use the same classification in streaming and buffered modes; HEAD omits the body. Valid batches keep HTTP 200 with this message on each rejected item. Parent/operation deadlines remain 504; caller cancellation remains 503 with `request canceled`. There is no automatic retry or Retry-After promise. See [admission](admission.md).

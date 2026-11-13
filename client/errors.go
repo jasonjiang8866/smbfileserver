@@ -13,6 +13,16 @@ import (
 // covered by a more specific standard error. It does not imply retry safety.
 var ErrUnavailable = errors.New("SMB operation failed")
 
+// ErrBusy means admission was rejected because the waiting queue was full or
+// QueueTimeout elapsed. No SMB connection was opened for the rejected call.
+// The Overloaded marker allows adapters to classify it without importing client.
+var ErrBusy error = &busyError{}
+
+type busyError struct{}
+
+func (*busyError) Error() string    { return "SMB reader busy" }
+func (*busyError) Overloaded() bool { return true }
+
 // ErrTooLarge means the file exceeds Config.MaxFileBytes. Use errors.Is.
 // Its SizeLimitExceeded marker lets HTTP adapters recognize it without importing
 // this package or the SMB backend.
@@ -26,7 +36,7 @@ func (*sizeLimitError) SizeLimitExceeded() bool { return true }
 // OpError identifies the failing operation without including credentials, host,
 // filename or raw backend diagnostics. Err is a backend-independent category:
 // fs.ErrInvalid, fs.ErrNotExist, fs.ErrPermission, context.Canceled,
-// context.DeadlineExceeded, ErrTooLarge or ErrUnavailable.
+// context.DeadlineExceeded, fs.ErrClosed, ErrBusy, ErrTooLarge or ErrUnavailable.
 type OpError struct {
 	Op  string
 	Err error
@@ -55,6 +65,8 @@ func opError(ctx context.Context, op string, err error) error {
 		kind = context.DeadlineExceeded
 	case errors.Is(err, ErrTooLarge):
 		kind = ErrTooLarge
+	case errors.Is(err, ErrBusy):
+		kind = ErrBusy
 	case errors.Is(err, fs.ErrNotExist):
 		kind = fs.ErrNotExist
 	case errors.Is(err, fs.ErrPermission):

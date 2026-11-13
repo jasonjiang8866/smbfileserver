@@ -26,6 +26,8 @@ type Config struct {
 	RequestTimeout        time.Duration
 	ShutdownTimeout       time.Duration
 	SMBMaxConcurrentReads int
+	SMBMaxQueuedReads     int
+	SMBQueueTimeout       time.Duration
 	SMBMaxFileBytes       int64
 }
 
@@ -86,6 +88,7 @@ func loadConfig(envFile string, lookup func(string) (string, bool)) (Config, err
 	}{
 		{"REQUEST_TIMEOUT", "30s", &cfg.RequestTimeout},
 		{"SHUTDOWN_TIMEOUT", "15s", &cfg.ShutdownTimeout},
+		{"SMB_QUEUE_TIMEOUT", client.DefaultQueueTimeout.String(), &cfg.SMBQueueTimeout},
 	} {
 		d, err := time.ParseDuration(get(field.name, "", field.fallback))
 		if err != nil || d <= 0 || d > 10*time.Minute {
@@ -102,6 +105,10 @@ func loadConfig(envFile string, lookup func(string) (string, bool)) (Config, err
 		return Config{}, errors.New("SMB_MAX_FILE_BYTES must be a positive integer less than MaxInt64")
 	}
 	cfg.SMBMaxConcurrentReads, cfg.SMBMaxFileBytes = concurrency, maxBytes
+	cfg.SMBMaxQueuedReads, err = strconv.Atoi(get("SMB_MAX_QUEUED_READS", "", strconv.Itoa(client.DefaultMaxQueuedReads)))
+	if err != nil || cfg.SMBMaxQueuedReads <= 0 {
+		return Config{}, errors.New("SMB_MAX_QUEUED_READS must be a positive integer")
+	}
 	cfg.MaxBatchFiles, err = strconv.Atoi(get("MAX_BATCH_FILES", "", "100"))
 	if err != nil || cfg.MaxBatchFiles <= 0 {
 		return Config{}, errors.New("MAX_BATCH_FILES must be a positive integer")
@@ -126,5 +133,6 @@ func newSMBClient(cfg Config) (*client.Client, error) {
 	}
 	return client.New(client.Config{Host: cfg.SMBHost, Port: port, Username: cfg.SMBUser,
 		Password: cfg.SMBPassword, Domain: cfg.SMBDomain, Timeout: cfg.RequestTimeout,
-		MaxConcurrentReads: cfg.SMBMaxConcurrentReads, MaxFileBytes: cfg.SMBMaxFileBytes})
+		MaxConcurrentReads: cfg.SMBMaxConcurrentReads, MaxQueuedReads: cfg.SMBMaxQueuedReads,
+		QueueTimeout: cfg.SMBQueueTimeout, MaxFileBytes: cfg.SMBMaxFileBytes})
 }

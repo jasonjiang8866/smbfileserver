@@ -2,7 +2,7 @@
 
 A read-only **SMB client toolkit and SMB-to-HTTP gateway** written in Go. Applications fetch files from an existing Windows/Samba share through HTTP without mounting SMB inside their containers. The long-term target is Kubernetes and OpenShift application workloads.
 
-This repository currently provides the reliability foundation, **not a production deployment**. Authentication, share/path authorization, queue admission controls and container manifests are planned in [the roadmap](docs/roadmap.md). Until those controls exist, run only in a trusted development environment with a dedicated read-only SMB account. CI includes an isolated Samba interoperability fixture; Windows SMB, AD/Kerberos and actual OpenShift deployment remain unverified.
+This repository currently provides the reliability foundation, **not a production deployment**. Authentication, share/path authorization and container manifests are planned in [the roadmap](docs/roadmap.md). Until those controls exist, run only in a trusted development environment with a dedicated read-only SMB account. CI includes an isolated Samba interoperability fixture; Windows SMB, AD/Kerberos and actual OpenShift deployment remain unverified.
 
 ## Added value over CloudSoda
 
@@ -12,7 +12,7 @@ CloudSoda implements SMB negotiation, authentication, signing/encryption and fil
 | --- | --- |
 | Stream without managing session handles | `client.Open(ctx, share, file)` owns the connection/session/share/file until Close, EOF or cancellation; `ReadFile` remains a buffered convenience API |
 | Bound a whole operation | One timeout covers admission, dialing, authentication, reads and cleanup; cancellation closes transport I/O |
-| Limit upstream load across callers | One reusable client limits active reads across all requests (default **8**); expired queued calls do not dial |
+| Limit upstream load across callers | One reusable client limits **8 active + 32 waiting** reads by default; queue wait is capped at **5 seconds**, with explicit overload errors |
 | Avoid unbounded individual file reads | A **32 MiB** default limit checks both metadata and actual bytes, including files that grow after Stat; failures return no partial contents |
 | Handle failures without backend-specific types | `errors.Is` categories and sanitized `OpError` identify the failing stage without leaking server paths or credentials |
 | Embed or deploy the same logic | Compose `client` + `smbhttp`, or run the existing Fiber gateway, backed by the same tests |
@@ -100,7 +100,9 @@ The previous `go run main.go readremotefile.go` command no longer includes all s
 | `HTTP_ADDR` | `:3000` | HTTP listener address; use `127.0.0.1:3000` for local-only access |
 | `REQUEST_TIMEOUT` | `30s` | Total SMB operation budget for a single or batch HTTP request, including queued batch work |
 | `SHUTDOWN_TIMEOUT` | `15s` | Grace period for in-flight HTTP requests after SIGINT/SIGTERM |
-| `SMB_MAX_CONCURRENT_READS` | `8` | Maximum active reads shared across the gateway's one client, including cleanup; waiting uses the request timeout |
+| `SMB_MAX_CONCURRENT_READS` | `8` | Maximum active reads shared across the gateway's one client, including cleanup |
+| `SMB_MAX_QUEUED_READS` | `32` | Maximum callers waiting for an active SMB slot; a full queue rejects immediately |
+| `SMB_QUEUE_TIMEOUT` | `5s` | Maximum wait for a slot, within the request budget; expiry returns 503 before SMB I/O |
 | `SMB_MAX_FILE_BYTES` | `33554432` | Maximum contents of one file (32 MiB), including streamed files; raise explicitly for larger files |
 | `MAX_BATCH_FILES` | `100` | Maximum requested files per batch |
 | `MAX_BATCH_BYTES` | `33554432` | Maximum decoded contents retained in successful batch entries (32 MiB) |
@@ -132,7 +134,7 @@ The literal GET `batch` path is reserved. To read a file named `batch`, use POST
 }
 ```
 
-Batch results retain input order, including duplicates. Each file can succeed or fail independently; a valid batch returns HTTP 200 with per-file errors, including when every file fails. Missing files, permission errors, timeouts and transport failures do not terminate the process. Raw backend error text is not returned to clients.
+Batch results retain input order, including duplicates. Each file can succeed or fail independently; a valid batch returns HTTP 200 with per-file errors, including when every file fails. Missing files, permission errors, timeouts and transport failures do not terminate the process. Raw backend error text is not returned to clients. A full SMB admission queue or expired queue wait returns `503` with `SMB reader busy` for single-file GET/HEAD; batch keeps its per-file error contract. Parent/operation deadline expiry remains `504`. See [admission semantics and sizing](docs/admission.md).
 
 Single-file failures **before streaming starts** return JSON `{"error":"..."}` with HTTP 404 (missing file), 403 (SMB access denied), 504 (timeout), 503 (cancellation), 413 (file size limit), 400 (invalid file/share name), or 502 (other SMB failure). Invalid batch requests return 400. POST accepts `Content-Type: application/json` (optional charset); other media types return 415, bodies over 4 MiB return 413, and extra JSON values are rejected. Unsupported methods return 405 with an `Allow` header. GET routes also accept HEAD. With Open, single-file HEAD reads metadata only and returns `application/octet-stream` plus the opening size; GET sniffs content and omits Content-Length to avoid promising a mutable size. Buffered fallback HEAD computes headers by reading the file. The backend may classify a missing share as a generic SMB failure. **Once streaming headers are sent**, upstream errors, timeout or detected growth beyond the size limit abort the HTTP response; callers must check body-read errors, not just status 200. No JSON error is appended to file bytes.
 
