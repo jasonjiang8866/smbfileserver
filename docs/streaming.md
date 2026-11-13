@@ -4,9 +4,9 @@
 | --- | --- |
 | `client.Open(ctx, share, path)` | Incremental `fs.File`; caller closes it |
 | `client.ReadFile(...)` | Complete buffered contents, internally using Open |
-| `smbhttp` single-file GET with public client | Streaming, unless DisableStreaming is true |
+| `smbhttp` single-file GET with public client | HTTP/1.1+ streams unless DisableStreaming is true; HTTP/1.0 buffers |
 | `smbhttp` with ReadFile-only custom reader | Buffered compatibility fallback |
-| Gateway `HTTP_SERVER=nethttp` (default) | Native streaming and disconnect cancellation |
+| Gateway `HTTP_SERVER=nethttp` (default) | Native HTTP/1.1+ streaming, HTTP/1.0 buffered GET, and disconnect cancellation |
 | Gateway `HTTP_SERVER=fiber` | Explicit buffered single-file alternative |
 | Batch GET/POST | Buffered Base64 JSON with count and aggregate decoded-content limits |
 
@@ -30,11 +30,13 @@ The default 32 MiB MaxFileBytes policy still applies to streams. Increase it exp
 
 ## HTTP behavior
 
-The handler reads at most 512 bytes to sniff MIME, flushes that prefix, then copies with a 32 KiB buffer. The native gateway supplies write/read/idle timeouts and propagates disconnect context. Slow HTTP clients apply socket backpressure; the client operation timeout can reclaim SMB resources even while HTTP output is blocked. Embedders must configure their own server write timeout to bound such blocked writes.
+For HTTP/1.1+ streaming GET, the handler reads at most 512 bytes to sniff MIME, flushes that prefix, then copies with a 32 KiB buffer. The native gateway supplies write/read/idle timeouts and propagates disconnect context. Slow HTTP clients apply socket backpressure; the client operation timeout can reclaim SMB resources even while HTTP output is blocked. Embedders must configure their own server write timeout to bound such blocked writes.
 
-GET omits Content-Length because opening metadata can change; HTTP/1.1 normally uses chunked framing. If an upstream error, timeout or growth limit occurs after response headers, the handler aborts the response rather than appending JSON or completing the framing. A 200 status alone does not mean success: check the body read/copy result. In Go this commonly appears as io.ErrUnexpectedEOF. HTTP middleware must rethrow http.ErrAbortHandler rather than converting it to a normal response.
+Streaming GET omits Content-Length because opening metadata can change; HTTP/1.1 normally uses chunked framing. If an upstream error, timeout or growth limit occurs after response headers, the handler aborts the response rather than appending JSON or completing the framing. A 200 status alone does not mean success: check the body read/copy result. In Go this commonly appears as io.ErrUnexpectedEOF. Write to a temporary file and publish it only after a successful complete copy; compare a trusted SHA-256 when content identity matters. HEAD size is opening metadata, not a snapshot or integrity guarantee. HTTP middleware must rethrow http.ErrAbortHandler rather than converting it to a normal response.
 
-HEAD opens, reads metadata and closes without reading file data. It reports the opening size with application/octet-stream. Buffered fallback HEAD retains the older complete-read behavior. Range and conditional requests are not implemented.
+HTTP/1.0 GET uses ReadFile and buffers the complete file before responding. Close-delimited HTTP/1.0 cannot distinguish normal EOF from an aborted stream. A failed upstream read therefore returns a sanitized JSON error (for example 502) without file bytes; success returns the exact Content-Length. This uses memory proportional to file size and retains the same configured per-file limit (32 MiB by default), timeout and native disconnect cancellation. Custom ReadFile implementations must enforce their own limits and honor context.
+
+HEAD opens, reads metadata and closes without reading file data. This remains metadata-only for HTTP/1.0 as well. It reports the opening size with application/octet-stream. Buffered fallback HEAD retains the older complete-read behavior. Range and conditional requests are not implemented.
 
 ## Batch limits and memory scope
 
@@ -44,7 +46,7 @@ Neither batch limit is a process RSS limit: concurrent workers hold temporary bu
 
 ## Verification
 
-Offline tests cover first-prefix delivery while the rest of a source is blocked, disconnect-driven Close, late read errors/panics aborting the HTTP body, HEAD without file reads, fixed-size read buffers, explicit fallback, batch limits, EOF/early Close and concurrent Close/Read. Both HTTP server implementations retain graceful-shutdown tests.
+Offline tests cover first-prefix delivery while the rest of a source is blocked, disconnect-driven Close, late read errors/panics aborting the HTTP body, HEAD without file reads, fixed-size read buffers, explicit fallback, real-socket HTTP/1.0 success with exact Content-Length, HTTP/1.0 late upstream failure returning complete 502 JSON, HTTP/1.0 metadata-only HEAD, batch limits, EOF/early Close and concurrent Close/Read. Both HTTP server implementations retain graceful-shutdown tests.
 
 A local Go 1.27.4 Linux amd64 handler-only benchmark used generated data and a discard writer (3 iterations per size):
 

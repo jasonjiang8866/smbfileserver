@@ -1,6 +1,7 @@
 package smbhttp_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -22,13 +24,119 @@ import (
 
 type openReader struct {
 	open     func(context.Context) (fs.File, error)
+	readFile func(context.Context) ([]byte, error)
 	buffered atomic.Int32
 }
 
 func (o *openReader) Open(ctx context.Context, _, _ string) (fs.File, error) { return o.open(ctx) }
-func (o *openReader) ReadFile(context.Context, string, string) ([]byte, error) {
+func (o *openReader) ReadFile(ctx context.Context, _, _ string) ([]byte, error) {
 	o.buffered.Add(1)
+	if o.readFile != nil {
+		return o.readFile(ctx)
+	}
 	return []byte("buffered"), nil
+}
+
+// Use an actual HTTP/1.0 connection: ResponseRecorder cannot detect whether
+// close-delimited transport framing hides a truncated response.
+func http10Response(t *testing.T, server *httptest.Server, method string) *http.Response {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(conn, method+" /s/f HTTP/1.0\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: method})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { response.Body.Close() })
+	return response
+}
+
+func TestHTTP10GETBuffersBeforeHeaders(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		name := "success"
+		if fail {
+			name = "upstream_failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			payload := bytes.Repeat([]byte("x"), 1024)
+			var closed atomic.Int32
+			source := &openReader{open: func(context.Context) (fs.File, error) {
+				reader := bytes.NewReader(payload)
+				return &fakeStream{File: fixture(), read: func(p []byte) (int, error) {
+					if fail && reader.Len() <= 512 {
+						return 0, errors.New("secret upstream failure")
+					}
+					if len(p) > 512 {
+						p = p[:512]
+					}
+					return reader.Read(p)
+				}, close: func() error { closed.Add(1); return nil }}, nil
+			}}
+			// Like client.ReadFile, consume the same source and discard data on
+			// failure. The handler must not call the streaming path for HTTP/1.0.
+			source.readFile = func(ctx context.Context) ([]byte, error) {
+				file, err := source.open(ctx)
+				if err != nil {
+					return nil, err
+				}
+				defer file.Close()
+				data, err := io.ReadAll(file)
+				if err != nil {
+					return nil, err
+				}
+				return data, nil
+			}
+			server := httptest.NewServer(handler(t, source, smbhttp.Options{}))
+			t.Cleanup(server.Close)
+			response := http10Response(t, server, http.MethodGet)
+			data, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatalf("incomplete response: %v", err)
+			}
+			wantStatus, wantBody := http.StatusOK, payload
+			if fail {
+				wantStatus, wantBody = http.StatusBadGateway, []byte(`{"error":"SMB request failed"}`)
+				if response.Header.Get("Content-Type") != "application/json" {
+					t.Fatal("failure must be JSON")
+				}
+			}
+			if response.StatusCode != wantStatus || !bytes.Equal(data, wantBody) || response.ContentLength != int64(len(wantBody)) {
+				t.Fatalf("status=%d length=%d body=%q", response.StatusCode, response.ContentLength, data)
+			}
+			if source.buffered.Load() != 1 || closed.Load() != 1 {
+				t.Fatalf("buffered calls=%d closes=%d", source.buffered.Load(), closed.Load())
+			}
+		})
+	}
+}
+
+func TestHTTP10HEADRemainsMetadataOnly(t *testing.T) {
+	var reads, closed atomic.Int32
+	source := &openReader{open: func(context.Context) (fs.File, error) {
+		return &fakeStream{File: fixture(), read: func([]byte) (int, error) {
+			reads.Add(1)
+			return 0, io.EOF
+		}, close: func() error { closed.Add(1); return nil }}, nil
+	}}
+	server := httptest.NewServer(handler(t, source, smbhttp.Options{}))
+	t.Cleanup(server.Close)
+	response := http10Response(t, server, http.MethodHead)
+	data, err := io.ReadAll(response.Body)
+	if err != nil || len(data) != 0 || response.StatusCode != 200 || response.ContentLength != 8 || response.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("HEAD status=%d length=%d body=%q err=%v", response.StatusCode, response.ContentLength, data, err)
+	}
+	if reads.Load() != 0 || source.buffered.Load() != 0 || closed.Load() != 1 {
+		t.Fatal("HEAD read file contents or leaked stream")
+	}
 }
 
 type fakeStream struct {

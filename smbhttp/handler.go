@@ -31,7 +31,7 @@ type FileReader interface {
 }
 
 // FileOpener is the optional streaming capability. The handler prefers Open for
-// single-file requests and closes the returned file on every path. Stat provides
+// HTTP/1.1+ GET and metadata-only HEAD requests, closing the file on every path. Stat provides
 // opening metadata; readers must enforce their own limits and honor context.
 type FileOpener interface {
 	Open(ctx context.Context, share, file string) (fs.File, error)
@@ -124,7 +124,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, status, message)
 		return
 	}
-	if opener, ok := h.reader.(FileOpener); ok && !h.options.DisableStreaming {
+	// HTTP/1.0 close-delimited bodies cannot distinguish a late upstream failure
+	// from successful EOF. Buffer GETs so failures precede headers and successful
+	// responses carry an exact Content-Length. HEAD never transfers file data.
+	if opener, ok := h.reader.(FileOpener); ok && !h.options.DisableStreaming && (r.Method == http.MethodHead || r.ProtoAtLeast(1, 1)) {
 		h.stream(w, r.WithContext(ctx), opener, parts[0], parts[1])
 		return
 	}

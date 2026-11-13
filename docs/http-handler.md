@@ -1,6 +1,6 @@
 # Embedding `smbhttp`
 
-`New(reader FileReader, options Options) (*Handler, error)` creates a concurrent `http.Handler`. A public `*client.Client` implements this reader interface directly. The handler receives an already initialized reader; it does not own or close that reader. A reader must support concurrent calls and stop promptly on context cancellation. The optional FileOpener capability returns a streaming fs.File; it is preferred for single-file responses. ReadFile-only readers remain buffered. The public contract exposes no Fiber or CloudSoda types.
+`New(reader FileReader, options Options) (*Handler, error)` creates a concurrent `http.Handler`. A public `*client.Client` implements this reader interface directly. The handler receives an already initialized reader; it does not own or close that reader. A reader must support concurrent calls and stop promptly on context cancellation. The optional FileOpener capability returns a streaming fs.File; it is preferred for HTTP/1.1+ single-file GET and metadata-only HEAD responses. HTTP/1.0 GET uses buffered ReadFile. ReadFile-only readers remain buffered. The public contract exposes no Fiber or CloudSoda types.
 
 ## Mounting and routes
 
@@ -8,11 +8,11 @@ Mount with `mux.Handle("/files/", http.StripPrefix("/files", h))`. Routes below 
 
 | Method | Relative route | Response |
 | --- | --- | --- |
-| GET / HEAD | `/{share}/{file}` | GET streams sniffed bytes; HEAD uses metadata (see below) |
+| GET / HEAD | `/{share}/{file}` | HTTP/1.1+ GET streams sniffed bytes; HTTP/1.0 GET buffers; HEAD uses metadata (see below) |
 | GET / HEAD | `/{share}/batch?files=a,b&concurrency=3` | Legacy Base64 batch JSON |
 | POST | `/{share}/batch` | Base64 batch JSON from `BatchFileRequest` |
 
-With FileOpener, HEAD reads metadata only, returning opening Content-Length and generic `application/octet-stream`. GET sniffs the first 512 bytes, then copies with a 32 KiB buffer; it does not promise Content-Length from mutable metadata. Buffered fallback HEAD still performs a complete read. Unknown paths return 404; unsupported methods return 405 with Allow. No hello/health endpoint is installed by this package; the gateway supplies `/api/v1/hello`.
+With FileOpener, HEAD reads metadata only, returning opening Content-Length and generic `application/octet-stream`. HTTP/1.1+ GET sniffs the first 512 bytes, then copies with a 32 KiB buffer; it does not promise Content-Length from mutable metadata. HTTP/1.0 GET buffers before sending headers, returning complete JSON on upstream failure and an exact Content-Length on success. HTTP/1.0 HEAD still uses metadata only when Open is enabled. Buffered fallback HEAD still performs a complete read. Unknown paths return 404; unsupported methods return 405 with Allow. No hello/health endpoint is installed by this package; the gateway supplies `/api/v1/hello`.
 
 Streaming failures before headers use normal JSON error mapping. After headers, a failure aborts HTTP framing with `http.ErrAbortHandler`; middleware must preserve that sentinel. Clients must check body-read errors rather than treating 200 as proof of a complete download. The handler closes streams on every path. See [streaming contract](streaming.md).
 
@@ -39,7 +39,7 @@ Native net/http request cancellation, including a disconnected HTTP client, reac
 
 Wrap `fs.ErrNotExist`, `fs.ErrPermission`, `context.Canceled` or `context.DeadlineExceeded` to preserve HTTP classification. `fs.ErrInvalid` maps to 400. An error implementing `SizeLimitExceeded() bool` and returning true maps to 413; the public client uses that marker for `client.ErrTooLarge`, preserving the handler's standard-library-only production dependency tree. Network timeouts map to 504; unknown backend errors map to a generic 502. Raw backend text is never included in HTTP errors.
 
-Single-file responses stream when FileOpener is available. Batch responses and ReadFile-only fallback are buffered; Base64 expands batch memory use. Body size is an input limit, not an output/file limit. Range/conditional requests, global request/queue admission and authentication remain separate work. The public client supplies a per-instance active-read cap and per-file byte cap when injected; a custom reader defines its own resource policy. The dependency boundary and lifecycle contract are intended to support those additions without binding importers to the gateway.
+HTTP/1.1+ single-file GET responses stream when FileOpener is available and streaming is enabled. HTTP/1.0 GET buffers with memory proportional to file size and retains the reader's per-file limits, request timeout and native disconnect cancellation. Batch responses and ReadFile-only fallback are buffered; Base64 expands batch memory use. Body size is an input limit, not an output/file limit. Range/conditional requests, global request/queue admission and authentication remain separate work. The public client supplies a per-instance active-read cap and per-file byte cap when injected; a custom reader defines its own resource policy. The dependency boundary and lifecycle contract are intended to support those additions without binding importers to the gateway.
 
 ## Verification
 
