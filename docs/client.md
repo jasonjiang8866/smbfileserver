@@ -27,6 +27,8 @@ This is not a new SMB protocol implementation or a performance optimization. The
 | `Domain` | Optional NTLM domain; not Kerberos delegation |
 | `Timeout` | Zero selects 30 seconds; negative is invalid |
 | `MaxConcurrentReads` | Zero selects 8; negative is invalid |
+| `MaxQueuedReads` | Zero selects 32 waiting calls; negative is invalid |
+| `QueueTimeout` | Zero selects 5 seconds; negative is invalid; applies only before admission |
 | `MaxFileBytes` | Zero selects 32 MiB; negative or MaxInt64 is invalid |
 
 Use one client for callers that should share a limit. Configuration is copied at construction, so mutating the original Config does not change active or later calls. There is no environment/dotenv loading, listener, signal hook, persistent goroutine or open connection at construction. Credentials remain in memory for future calls; create a new client to rotate them. Do not log or serialize Config: it contains the password. No Client.Close is needed. Open callers close the returned stream; EOF, errors and deadline/cancellation also release it automatically. The zero Client value is not usable and a constructed Client should not be copied.
@@ -45,9 +47,9 @@ Native net/http disconnect cancellation flows through smbhttp into the client. F
 
 `Open` checks opening metadata and limits cumulative reads to the configured maximum, probing one extra byte to detect growth. `ReadFile` consumes that same bounded stream. A successful result has at most `MaxFileBytes` bytes. ReadFile failures return nil data. Open streams can deliver a prefix before failing; callers must check Read/io.Copy errors and close the stream. Stat returns a cached opening snapshot (also after Close), not a fresh server query. EOF and fs.ErrClosed are standard stream results; backend failures retain OpError classification.
 
-The byte cap applies to a single file's contents, not total network traffic, allocation overhead, batch output or process RSS. Batch responses retain completed files and Base64 adds overhead. The active-read cap does not bound the number of waiting callers. The HTTP handler now caps batch file count and retained decoded contents, but transient worker/encoding allocations, queue length, slow-client memory, process-wide policy across multiple clients and replica-wide load still require sizing. Single-file streaming uses fixed-size handler buffers; see [streaming evidence](streaming.md). These limits do not make the gateway production-ready for arbitrary untrusted workloads.
+The byte cap applies to a single file's contents, not total network traffic, allocation overhead, batch output or process RSS. Batch responses retain completed files and Base64 adds overhead. The active-read and queue caps bound admitted and waiting SMB calls per client, respectively. The HTTP handler now caps batch file count and retained decoded contents, but transient worker/encoding allocations, HTTP requests outside SMB admission, slow-client memory, process-wide policy across multiple clients and replica-wide load still require sizing. Single-file streaming uses fixed-size handler buffers; see [streaming evidence](streaming.md). These limits do not make the gateway production-ready for arbitrary untrusted workloads.
 
-The gateway now defaults to 8 active reads and 32 MiB per file, replacing the previous per-batch-only concurrency and unbounded individual reads. Configure `SMB_MAX_CONCURRENT_READS` and `SMB_MAX_FILE_BYTES` explicitly for another workload. Both environment values must be positive integers; zero is reserved for defaults only in the Go Config API.
+The gateway defaults to 8 active reads, 32 waiting calls, a 5-second maximum admission wait and 32 MiB per file. Configure `SMB_MAX_CONCURRENT_READS`, `SMB_MAX_QUEUED_READS`, `SMB_QUEUE_TIMEOUT` and `SMB_MAX_FILE_BYTES` for another workload. Environment counts/bytes must be positive integers and durations must be positive and at most 10 minutes; zero selects defaults only in the Go Config API. See [admission behavior](admission.md) for overload handling and scope.
 
 ## Error contract
 
@@ -60,12 +62,13 @@ Open/ReadFile backend failures return an `*OpError` with a stage such as `admit`
 | `fs.ErrInvalid` | Invalid input | 400 |
 | `fs.ErrNotExist` | Backend reports missing file | 404 |
 | `fs.ErrPermission` | Backend reports access denied | 403 |
+| `client.ErrBusy` | Waiting queue full or queue wait expired; no SMB connection opened | 503 |
 | `client.ErrTooLarge` | File exceeds configured byte limit | 413 |
 | `client.ErrUnavailable` | Other connection, authentication or protocol failure | 502 |
 
 The stage is useful for diagnostics; the error contains no raw backend cause. This intentionally trades detailed vendor status codes for a portable, sanitized public contract. A missing share may still be categorized as ErrUnavailable. ErrUnavailable does not establish that retrying is safe. Batch requests retain HTTP 200 with the corresponding per-file error message.
 
-The ErrTooLarge error exposes `SizeLimitExceeded() bool` so the HTTP package can recognize it with errors.As without importing the client. Custom readers may implement the same marker.
+The ErrTooLarge error exposes `SizeLimitExceeded() bool` so the HTTP package can recognize it with errors.As without importing the client. ErrBusy similarly exposes `Overloaded() bool`. Custom readers may implement these markers; neither requires the handler to import client or CloudSoda.
 
 A bare share name is required; UNC share paths and empty/NUL input are rejected. Nested filenames remain supported. This is not path confinement, symlink/DFS/reparse protection or caller authorization. Use authorized share mappings and a dedicated server-side read-only account. Reads do not guarantee a consistent snapshot if another process modifies a file during transfer.
 

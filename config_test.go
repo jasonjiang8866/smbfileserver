@@ -20,7 +20,7 @@ func TestConfigEnvironmentOnlyAndLegacy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.SMBHost != "files.example.test" || cfg.SMBPassword != "secret" || cfg.RequestTimeout != 30*time.Second || cfg.ListenAddress != ":3000" || cfg.HTTPServer != "nethttp" || cfg.MaxBatchFiles != 100 || cfg.MaxBatchBytes != 32<<20 || cfg.SMBMaxConcurrentReads != 8 || cfg.SMBMaxFileBytes != 32<<20 {
+		if cfg.SMBHost != "files.example.test" || cfg.SMBPassword != "secret" || cfg.RequestTimeout != 30*time.Second || cfg.ListenAddress != ":3000" || cfg.HTTPServer != "nethttp" || cfg.MaxBatchFiles != 100 || cfg.MaxBatchBytes != 32<<20 || cfg.SMBMaxConcurrentReads != 8 || cfg.SMBMaxFileBytes != 32<<20 || cfg.SMBMaxQueuedReads != 32 || cfg.SMBQueueTimeout != 5*time.Second {
 			t.Fatalf("unexpected defaults (credentials omitted)")
 		}
 	}
@@ -56,6 +56,8 @@ func TestConfigValidation(t *testing.T) {
 		{"SHUTDOWN_TIMEOUT", "bad"}, {"HTTP_SERVER", "invalid"}, {"MAX_BATCH_FILES", "0"}, {"MAX_BATCH_BYTES", "-1"}, {"MAX_BATCH_BYTES", "9223372036854775807"},
 		{"SMB_MAX_CONCURRENT_READS", "0"}, {"SMB_MAX_CONCURRENT_READS", "-1"}, {"SMB_MAX_CONCURRENT_READS", "abc"},
 		{"SMB_MAX_FILE_BYTES", "0"}, {"SMB_MAX_FILE_BYTES", "-1"}, {"SMB_MAX_FILE_BYTES", "9223372036854775807"},
+		{"SMB_MAX_QUEUED_READS", "0"}, {"SMB_MAX_QUEUED_READS", "-1"}, {"SMB_MAX_QUEUED_READS", "abc"},
+		{"SMB_QUEUE_TIMEOUT", "0s"}, {"SMB_QUEUE_TIMEOUT", "-1s"}, {"SMB_QUEUE_TIMEOUT", "11m"}, {"SMB_QUEUE_TIMEOUT", "bad"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
@@ -91,11 +93,13 @@ func TestClientLimitsConfig(t *testing.T) {
 	env := validEnv()
 	env["SMB_MAX_FILE_BYTES"] = "1048576"
 	env["SMB_MAX_CONCURRENT_READS"] = "2"
+	env["SMB_MAX_QUEUED_READS"] = "3"
+	env["SMB_QUEUE_TIMEOUT"] = "250ms"
 	cfg, err := loadConfig(filepath.Join(t.TempDir(), "none"), envLookup(env))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SMBMaxFileBytes != 1048576 || cfg.SMBMaxConcurrentReads != 2 {
+	if cfg.SMBMaxFileBytes != 1048576 || cfg.SMBMaxConcurrentReads != 2 || cfg.SMBMaxQueuedReads != 3 || cfg.SMBQueueTimeout != 250*time.Millisecond {
 		t.Fatal("limits not applied")
 	}
 	if _, err := newSMBClient(cfg); err != nil {
