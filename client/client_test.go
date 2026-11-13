@@ -39,6 +39,7 @@ func TestConfigValidation(t *testing.T) {
 		{"port", func(c *client.Config) { c.Port = 65536 }}, {"negative port", func(c *client.Config) { c.Port = -1 }},
 		{"username", func(c *client.Config) { c.Username = " " }}, {"password", func(c *client.Config) { c.Password = "" }},
 		{"timeout", func(c *client.Config) { c.Timeout = -1 }}, {"concurrency", func(c *client.Config) { c.MaxConcurrentReads = -1 }},
+		{"queue count", func(c *client.Config) { c.MaxQueuedReads = -1 }}, {"queue timeout", func(c *client.Config) { c.QueueTimeout = -1 }},
 		{"size", func(c *client.Config) { c.MaxFileBytes = -1 }}, {"overflow", func(c *client.Config) { c.MaxFileBytes = math.MaxInt64 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -221,4 +222,34 @@ func TestConnectionFailureIsBackendNeutral(t *testing.T) {
 			t.Fatal("diagnostic exposed input")
 		}
 	}
+}
+
+func TestQueueTimeoutDoesNotDialOrCancelActiveRead(t *testing.T) {
+	server := newStalledServer(t)
+	cfg := server.config()
+	cfg.QueueTimeout = 30 * time.Millisecond
+	c := newClient(t, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := c.Open(ctx, "share", "file"); done <- err }()
+	wait(t, server.accepted, "active read did not connect")
+	for range 2 {
+		_, err := c.Open(context.Background(), "share", "queued")
+		var op *client.OpError
+		if !errors.Is(err, client.ErrBusy) || !errors.As(err, &op) || op.Op != "admit" {
+			t.Fatalf("queue timeout: %v", err)
+		}
+	}
+	if server.calls.Load() != 1 {
+		t.Fatal("rejected waiters opened connections")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("queue timeout canceled active call: %v", err)
+	default:
+	}
+	cancel()
+	result(t, done, context.Canceled)
+	wait(t, server.closed, "active transport stayed open")
 }

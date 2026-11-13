@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -46,4 +47,25 @@ func ExampleClient_ReadFile() {
 		return
 	}
 	fmt.Printf("read %d bytes\n", len(data))
+}
+
+func ExampleClient_Open() {
+	c, err := client.New(client.Config{Host: "files.example.test", Username: "reader", Password: "example-only"})
+	if err != nil {
+		panic(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	file, err := c.Open(ctx, "reports", "nested/report.csv")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer file.Close()
+	n, err := io.Copy(io.Discard, file)
+	if err != nil {
+		fmt.Println("incomplete transfer:", err)
+		return
+	}
+	fmt.Printf("transferred %d bytes\n", n)
 }

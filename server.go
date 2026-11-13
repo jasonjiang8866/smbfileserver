@@ -32,7 +32,7 @@ func newApp(cfg Config, reader smbhttp.FileReader, root context.Context) *fiber.
 	api := app.Group("/api/v1")
 	api.Get("/hello", func(c *fiber.Ctx) error { return c.SendString("Hello, World 👋!") })
 
-	handler, err := smbhttp.New(reader, smbhttp.Options{RequestTimeout: cfg.RequestTimeout})
+	handler, err := smbhttp.New(reader, smbhttp.Options{RequestTimeout: cfg.RequestTimeout, DisableStreaming: true, MaxBatchFiles: cfg.MaxBatchFiles, MaxBatchBytes: cfg.MaxBatchBytes})
 	if err != nil {
 		panic(err)
 	} // Gateway configuration is validated before startup.
@@ -45,4 +45,16 @@ func newApp(cfg Config, reader smbhttp.FileReader, root context.Context) *fiber.
 	})
 	app.Use("/api/v1/smb", adaptor.HTTPHandler(bridge))
 	return app
+}
+
+// The native server is the default gateway path and preserves disconnect context.
+func newHTTPHandler(cfg Config, reader smbhttp.FileReader) (http.Handler, error) {
+	handler, err := smbhttp.New(reader, smbhttp.Options{RequestTimeout: cfg.RequestTimeout, MaxBatchFiles: cfg.MaxBatchFiles, MaxBatchBytes: cfg.MaxBatchBytes})
+	if err != nil {
+		return nil, err
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/hello", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("Hello, World 👋!")) })
+	mux.Handle("/api/v1/smb/", http.StripPrefix("/api/v1/smb", handler))
+	return mux, nil
 }
