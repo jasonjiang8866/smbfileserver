@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: smbfileserver
+  annotations:
+    haproxy.router.openshift.io/timeout: 40s
+spec:
+  to:
+    kind: Service
+    name: smbfileserver
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

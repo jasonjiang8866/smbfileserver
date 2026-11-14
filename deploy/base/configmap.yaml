@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smbfileserver
+data:
+  HTTP_ADDR: ":3000"
+  HTTP_SERVER: nethttp
+  ACCESS_CONFIG_FILE: /run/secrets/smb-access/access.json
+  SMB_HOST: REPLACE_WITH_SMB_HOST
+  SMB_PORT: "445"
+  REQUEST_TIMEOUT: 30s
+  SHUTDOWN_TIMEOUT: 15s
+  SMB_MAX_CONCURRENT_READS: "8"
+  SMB_MAX_QUEUED_READS: "32"
+  SMB_QUEUE_TIMEOUT: 5s
+  SMB_MAX_FILE_BYTES: "33554432"
+  MAX_BATCH_FILES: "100"
+  MAX_BATCH_BYTES: "33554432"

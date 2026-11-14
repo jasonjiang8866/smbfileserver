@@ -2,7 +2,7 @@
 
 A read-only **SMB client toolkit and SMB-to-HTTP gateway** written in Go. Applications fetch files from an existing Windows/Samba share through HTTP without mounting SMB inside their containers. The long-term target is Kubernetes and OpenShift application workloads.
 
-This repository currently provides the reliability foundation, **not a production deployment**. The gateway now requires service authentication and explicit logical-share grants, with shared lexical path checks. Filesystem confinement still depends on dedicated server-side shares, read-only ACLs and link policy; container manifests and broader acceptance gates remain in [the roadmap](docs/roadmap.md). Use a trusted deployment environment and dedicated read-only SMB account. CI includes an isolated Samba interoperability fixture; Windows SMB, AD/Kerberos and actual OpenShift deployment remain unverified.
+This repository currently provides the reliability foundation, **not a production deployment**. The gateway now requires service authentication and explicit logical-share grants, with shared lexical path checks. Filesystem confinement still depends on dedicated server-side shares, read-only ACLs and link policy; [container/Kubernetes/OpenShift deployment foundations](docs/deployment.md) are available, with broader acceptance gates tracked in [the roadmap](docs/roadmap.md). Use a trusted deployment environment and dedicated read-only SMB account. CI includes an isolated Samba interoperability fixture; Windows SMB, AD/Kerberos and actual OpenShift deployment remain unverified.
 
 ## Added value over CloudSoda
 
@@ -114,6 +114,7 @@ Timeouts must be positive durations of at most `10m`. Legacy `serverIP`, `userNa
 
 ## API
 
+- `GET /livez` and `GET /readyz` — public process/local-readiness probes; no SMB I/O. Readiness becomes false when draining. See [deployment and probe semantics](docs/deployment.md).
 - `GET /api/v1/hello` — process-only hello response; does not check SMB availability.
 - `GET /api/v1/smb/:shareName/:fileName` — authenticated logical-share file as raw bytes, with content-sniffed MIME type and `X-Content-Type-Options: nosniff`. This route accepts one filename segment, not a nested URL path.
 - `POST /api/v1/smb/:shareName/batch` — multiple files as Base64 JSON.

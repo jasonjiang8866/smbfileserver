@@ -39,12 +39,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	cfg.health = &gatewayHealth{}
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("HTTP listen: %w", err)
 	}
 	if cfg.HTTPServer == "fiber" {
-		return serve(ctx, newApp(cfg, reader, requests), listener, cfg.ShutdownTimeout, cancel)
+		return serve(ctx, newApp(cfg, reader, requests), listener, cfg.ShutdownTimeout, cancel, cfg.health.drain)
 	}
 	handler, err := newHTTPHandler(cfg, reader)
 	if err != nil {
@@ -54,11 +55,11 @@ func run() error {
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: cfg.RequestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second,
 		BaseContext: func(net.Listener) context.Context { return requests }}
-	return serveHTTP(ctx, server, listener, cfg.ShutdownTimeout, cancel)
+	return serveHTTP(ctx, server, listener, cfg.ShutdownTimeout, cancel, cfg.health.drain)
 }
 
 // Stop accepting traffic first; cancel remaining SMB work after the grace period.
-func serve(ctx context.Context, app *fiber.App, listener net.Listener, grace time.Duration, cancelRequests context.CancelFunc) error {
+func serve(ctx context.Context, app *fiber.App, listener net.Listener, grace time.Duration, cancelRequests context.CancelFunc, onDrain ...func()) error {
 	defer listener.Close()
 	defer cancelRequests()
 	done := make(chan error, 1)
@@ -75,6 +76,9 @@ func serve(ctx context.Context, app *fiber.App, listener net.Listener, grace tim
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		for _, drain := range onDrain {
+			drain()
+		}
 		if err := app.ShutdownWithTimeout(grace); err != nil {
 			cancelRequests()
 			return fmt.Errorf("HTTP shutdown exceeded grace period: %w", err)

@@ -29,6 +29,9 @@ func newApp(cfg Config, reader smbhttp.FileReader, root context.Context) *fiber.
 		},
 	})
 	app.Use(recoverer.New())
+	health := cfg.probeHealth()
+	app.All("/livez", adaptor.HTTPHandler(health.handler(false)))
+	app.All("/readyz", adaptor.HTTPHandler(health.handler(true)))
 	api := app.Group("/api/v1")
 	api.Get("/hello", func(c *fiber.Ctx) error { return c.SendString("Hello, World 👋!") })
 
@@ -54,6 +57,9 @@ func newHTTPHandler(cfg Config, reader smbhttp.FileReader) (http.Handler, error)
 		return nil, err
 	}
 	mux := http.NewServeMux()
+	health := cfg.probeHealth()
+	mux.Handle("/livez", health.handler(false))
+	mux.Handle("/readyz", health.handler(true))
 	mux.HandleFunc("GET /api/v1/hello", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("Hello, World 👋!")) })
 	mux.Handle("/api/v1/smb/", protectReader(reader, http.StripPrefix("/api/v1/smb", handler)))
 	return mux, nil

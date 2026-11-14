@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func serveHTTP(ctx context.Context, server *http.Server, listener net.Listener, grace time.Duration, cancelRequests context.CancelFunc) error {
+func serveHTTP(ctx context.Context, server *http.Server, listener net.Listener, grace time.Duration, cancelRequests context.CancelFunc, onDrain ...func()) error {
 	defer cancelRequests()
 	defer server.Close()
 	defer listener.Close()
@@ -31,6 +31,9 @@ func serveHTTP(ctx context.Context, server *http.Server, listener net.Listener, 
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		for _, drain := range onDrain {
+			drain()
+		}
 		deadline, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
 		if err := server.Shutdown(deadline); err != nil {
