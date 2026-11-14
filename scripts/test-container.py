@@ -88,7 +88,9 @@ def main():
             assert docker('inspect', '--format', '{{.HostConfig.ReadonlyRootfs}}', name) == 'true'
             assert json.loads(docker('inspect', '--format', '{{json .HostConfig.CapDrop}}', name)) == ['ALL']
             assert 'no-new-privileges' in docker('inspect', '--format', '{{json .HostConfig.SecurityOpt}}', name)
-            uids = docker('top', name, '-eo', 'uid').splitlines()[1:]
+            # Docker requires PID in custom ps output to select container processes.
+            processes = docker('top', name, '-eo', 'pid,uid').splitlines()[1:]
+            uids = [process.split()[1] for process in processes]
             assert uids and all(uid.strip() == '1001234567' for uid in uids), uids
             print('Container: arbitrary UID 1001234567, read-only root, dropped capabilities verified.', flush=True)
             print('Container: probes, authenticated Samba download, unauthorized share and symlink denial passed.', flush=True)
