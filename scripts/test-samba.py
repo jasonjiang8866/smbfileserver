@@ -34,6 +34,9 @@ def main():
         share = root / 'share'
         (share / 'hello.txt').write_bytes(b'SMB integration fixture\n')
         (share / 'empty.txt').write_bytes(b'')
+        (root / 'outside-secret.txt').write_bytes(b'outside share must never be returned\n')
+        (share / 'escape-link.txt').symlink_to(root / 'outside-secret.txt')
+        (share / 'escape-dir').symlink_to(root, target_is_directory=True)
         (share / 'nested').mkdir()
         (share / 'nested' / '工艺 报表.csv').write_bytes('lot,value\n晶圆,42\n'.encode())
         (share / ('a' * 200 + '.txt')).write_bytes(b'long name\n')

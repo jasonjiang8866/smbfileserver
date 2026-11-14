@@ -1,0 +1,12 @@
+{
+  "shares": [
+    {"id": "reports", "name": "published-reports"}
+  ],
+  "services": [
+    {
+      "id": "report-worker",
+      "token_sha256": ["REPLACE_WITH_SHA256_OF_RANDOM_SERVICE_TOKEN"],
+      "shares": ["reports"]
+    }
+  ]
+}
