@@ -2,7 +2,7 @@
 
 A read-only **SMB client toolkit and SMB-to-HTTP gateway** written in Go. Applications fetch files from an existing Windows/Samba share through HTTP without mounting SMB inside their containers. The long-term target is Kubernetes and OpenShift application workloads.
 
-This repository currently provides the reliability foundation, **not a production deployment**. Authentication, share/path authorization and container manifests are planned in [the roadmap](docs/roadmap.md). Until those controls exist, run only in a trusted development environment with a dedicated read-only SMB account. CI includes an isolated Samba interoperability fixture; Windows SMB, AD/Kerberos and actual OpenShift deployment remain unverified.
+This repository currently provides the reliability foundation, **not a production deployment**. The gateway now requires service authentication and explicit logical-share grants, with shared lexical path checks. Filesystem confinement still depends on dedicated server-side shares, read-only ACLs and link policy; container manifests and broader acceptance gates remain in [the roadmap](docs/roadmap.md). Use a trusted deployment environment and dedicated read-only SMB account. CI includes an isolated Samba interoperability fixture; Windows SMB, AD/Kerberos and actual OpenShift deployment remain unverified.
 
 ## Added value over CloudSoda
 
@@ -71,7 +71,7 @@ mux.Handle("/files/", http.StripPrefix("/files", handler))
 // POST /files/reports/batch
 ```
 
-The host application owns its server, middleware, credentials and reader lifecycle. The handler starts no listener, reads no environment variables and installs no signal hooks. Wrap it with your application's authentication and share/path authorization. See the [executable example](smbhttp/handler_test.go) and [embedding contract](docs/http-handler.md).
+The host application owns its server, middleware, credentials and reader lifecycle. The handler starts no listener, reads no environment variables and installs no signal hooks. Wrap it with your application's authentication and share/path authorization, or compose the optional standard-library-only [`access` policy](docs/access-control.md). See the [executable example](smbhttp/handler_test.go) and [embedding contract](docs/http-handler.md).
 
 The gateway now defaults to native `net/http` (`HTTP_SERVER=nethttp`), preserving its canonical `/api/v1/smb/...` endpoints. Single-file HTTP/1.1+ GET prefers the client's Open method and streams by default. HTTP/1.0 GET uses buffered ReadFile so upstream failures return JSON before any file bytes and successful downloads have an exact Content-Length. HEAD remains metadata-only when Open is enabled. A custom reader offering only ReadFile remains a buffered fallback. Native hosting propagates disconnects; optional `HTTP_SERVER=fiber` explicitly disables single-file streaming and retains only shutdown/timeout cancellation.
 
@@ -85,12 +85,15 @@ go test -race ./...
 go build -o smbfileserver .
 ```
 
-Set the connection environment variables using your environment's secret mechanism, then run `./smbfileserver` or `go run .`. A local `.env` copied from `.env.example` is optional; it is read once at startup. Missing `.env` is normal. A malformed or unreadable file is a startup error. Environment values override dotenv values, including explicit empty values, and credentials are never included in configuration errors.
+Set the connection environment variables using your environment's secret mechanism, provide `ACCESS_CONFIG_FILE` with service-token SHA-256 digests and logical-share grants, then run `./smbfileserver` or `go run .`. A local `.env` copied from `.env.example` is optional; it is read once at startup. Missing `.env` is normal. A malformed or unreadable file is a startup error. Environment values override dotenv values, including explicit empty values, and credentials are never included in configuration errors.
+
+**Gateway migration:** unauthenticated file requests now return 401. Missing/invalid access policy stops startup. Use logical share IDs in URLs, supply `Authorization: Bearer <service-token>`, and expect downloads to use attachment/no-store headers. Token rotation uses overlapping digests and rolling restarts. See [setup, rotation and filesystem-boundary limitations](docs/access-control.md).
 
 The previous `go run main.go readremotefile.go` command no longer includes all source files; use `go run .`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `ACCESS_CONFIG_FILE` | Required | JSON service-token hashes and logical-share grants; loaded before listening |
 | `SMB_HOST` | Required | Bare hostname or IPv4/IPv6 address, without protocol or port |
 | `SMB_PORT` | `445` | SMB TCP port |
 | `SMB_USERNAME` | Required | Service account username |
@@ -112,7 +115,7 @@ Timeouts must be positive durations of at most `10m`. Legacy `serverIP`, `userNa
 ## API
 
 - `GET /api/v1/hello` — process-only hello response; does not check SMB availability.
-- `GET /api/v1/smb/:shareName/:fileName` — one file as raw bytes, with content-sniffed MIME type and `X-Content-Type-Options: nosniff`. This route accepts one filename segment, not a nested URL path.
+- `GET /api/v1/smb/:shareName/:fileName` — authenticated logical-share file as raw bytes, with content-sniffed MIME type and `X-Content-Type-Options: nosniff`. This route accepts one filename segment, not a nested URL path.
 - `POST /api/v1/smb/:shareName/batch` — multiple files as Base64 JSON.
 - `GET /api/v1/smb/:shareName/batch?files=one.png,two.png&concurrency=3` — legacy query form; filenames containing commas require POST.
 
@@ -136,7 +139,7 @@ The literal GET `batch` path is reserved. To read a file named `batch`, use POST
 
 Batch results retain input order, including duplicates. Each file can succeed or fail independently; a valid batch returns HTTP 200 with per-file errors, including when every file fails. Missing files, permission errors, timeouts and transport failures do not terminate the process. Raw backend error text is not returned to clients. A full SMB admission queue or expired queue wait returns `503` with `SMB reader busy` for single-file GET/HEAD; batch keeps its per-file error contract. Parent/operation deadline expiry remains `504`. See [admission semantics and sizing](docs/admission.md).
 
-Single-file failures **before streaming starts** return JSON `{"error":"..."}` with HTTP 404 (missing file), 403 (SMB access denied), 504 (timeout), 503 (cancellation or admission overload), 413 (file size limit), 400 (invalid file/share name), or 502 (other SMB failure). Invalid batch requests return 400. POST accepts `Content-Type: application/json` (optional charset); other media types return 415, bodies over 4 MiB return 413, and extra JSON values are rejected. Unsupported methods return 405 with an `Allow` header. GET routes also accept HEAD. With Open, single-file HEAD reads metadata only and returns `application/octet-stream` plus the opening size; streaming GET sniffs content and omits Content-Length to avoid promising a mutable size. HTTP/1.0 GET buffers first and sends the actual Content-Length on success. Buffered fallback HEAD computes headers by reading the file. The backend may classify a missing share as a generic SMB failure. **Once streaming headers are sent**, upstream errors, timeout or detected growth beyond the size limit abort the HTTP response; callers must check body-read errors, not just status 200. No JSON error is appended to file bytes.
+Missing/invalid service credentials return 401 before routing file operations. Unauthorized logical shares return 403; batch retains per-item denial errors after authentication. The protected gateway checks each path before backend access. Single-file failures **before streaming starts** return JSON `{"error":"..."}` with HTTP 404 (missing file), 403 (SMB access denied), 504 (timeout), 503 (cancellation or admission overload), 413 (file size limit), 400 (invalid file/share name), or 502 (other SMB failure). Invalid batch requests return 400. POST accepts `Content-Type: application/json` (optional charset); other media types return 415, bodies over 4 MiB return 413, and extra JSON values are rejected. Unsupported methods return 405 with an `Allow` header. GET routes also accept HEAD. With Open, single-file HEAD reads metadata only and returns `application/octet-stream` plus the opening size; streaming GET sniffs content and omits Content-Length to avoid promising a mutable size. HTTP/1.0 GET buffers first and sends the actual Content-Length on success. Buffered fallback HEAD computes headers by reading the file. The backend may classify a missing share as a generic SMB failure. **Once streaming headers are sent**, upstream errors, timeout or detected growth beyond the size limit abort the HTTP response; callers must check body-read errors, not just status 200. No JSON error is appended to file bytes.
 
 Batch workers default to 3 and are capped at 10 per request. The shared client additionally caps active streams/reads at 8. By default, a batch accepts at most 100 files and retains at most 32 MiB of successful decoded contents; entries that exceed the remaining budget get `batch byte limit exceeded`. Concurrent completion determines which entries fit, while response order remains input order. Base64, JSON encoding and in-flight worker buffers add memory overhead; these limits are not a whole-process RSS bound. A custom ReadFile-only backend must enforce its own per-read limits. SMB waiting-call count is also capped per client; global HTTP request admission and replica-wide limits remain outstanding.
 

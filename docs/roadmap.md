@@ -22,11 +22,11 @@ Next, move process/configuration wiring into a gateway command and complete the 
 
 ## PR 2 — access boundaries
 
-- Add rotatable service authentication. Keep long-lived service credentials out of browser code; initially place a business backend or authentication proxy in front.
-- Map logical share IDs to configured servers/shares/root directories. Do not let callers select arbitrary backend locations.
-- Define and test path handling for slash/backslash, absolute paths, encoding, Unicode, traversal, DFS and reparse points. String filtering alone is not a confinement guarantee.
-- Require a dedicated read-only SMB identity and test denied access. Define error codes and safe content-disposition/active-content handling.
-- Limit batch counts; document migration from raw share names and legacy routes.
+- Implemented: service Bearer token authentication with overlapping SHA-256 digests and restart-based rotation. Keep long-lived service credentials out of browser code; initially place a business backend or authentication proxy in front.
+- Implemented: per-service logical share grants mapping to dedicated whole shares on the configured SMB host. Arbitrary backend selection is unavailable. Subdirectory roots and multi-server mappings remain deferred.
+- Implemented: shared lexical checks for slash/backslash, absolute paths, encoding, Unicode and traversal in both streaming and buffered reads, plus server-enforced Samba symlink denial tests. Windows reparse/DFS and race-free subdirectory confinement remain unverified; string filtering alone is not a confinement guarantee.
+- Require dedicated server-side read-only shares/identity and test denied access. Implemented: 401/403 error contracts, attachment/no-store/sandbox response headers.
+- Batch count limits and migration from raw share names to authorized logical IDs are documented in [access control](access-control.md).
 
 Acceptance: unauthenticated and unauthorized requests are rejected; directory escape cases fail; allowed operations cannot mutate the SMB source.
 
