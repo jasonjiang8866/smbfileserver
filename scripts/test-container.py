@@ -80,7 +80,7 @@ def main():
             assert request('/api/v1/smb/reports/hello.txt')[0] == 401
             status, headers, body = request('/api/v1/smb/reports/hello.txt', True)
             assert status == 200 and body == b'SMB integration fixture\n', (status, body)
-            assert headers['Content-Disposition'].startswith('attachment;')
+            assert headers.get_content_disposition() == 'attachment'
             assert headers['Cache-Control'] == 'no-store'
             assert request('/api/v1/smb/readonly/hello.txt', True)[0] == 403
             assert request('/api/v1/smb/reports/escape-link.txt', True)[0] != 200
