@@ -75,3 +75,11 @@ A bare share name is required; UNC share paths and empty/NUL input are rejected.
 ## Validation scope
 
 Public-package tests cover constructor validation, input rejection, config snapshotting, canceled admission, timeout/transport cleanup, slot reuse, backend-neutral errors and client/handler composition. Unit fixtures cover growth after Stat; Samba tests cover actual size boundaries, signed/encrypted shares, HTTP cancellation and shared admission across requests. CI runs Go 1.26/1.27 race tests and the real Samba fixture; current execution results are recorded in the PR checks. Windows SMB/AD/Kerberos and restricted OpenShift deployment are not validated by these fixtures.
+
+## Admission visibility
+
+`Client.Stats()` returns credential-free `ActiveReads` and `QueuedReads` gauges
+without network I/O or logging dependencies. Active includes stream lifetime and
+cleanup. The two fields are sampled independently, not an atomic pair; neither is
+a whole-process memory or open-session count. Applications can export these with
+their own monitoring stack.

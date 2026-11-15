@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,8 +16,9 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(); err != nil {
-		log.Print(err)
+		slog.Error("gateway_stopped", "error", err.Error())
 		os.Exit(1)
 	}
 }
@@ -40,6 +41,12 @@ func run() error {
 		return err
 	}
 	cfg.health = &gatewayHealth{}
+	cfg.observation = newObservability(slog.Default(), backend.Stats)
+	metrics, err := startMetrics(cfg.MetricsAddress, cfg.observation)
+	if err != nil {
+		return err
+	}
+	defer metrics.Close()
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("HTTP listen: %w", err)

@@ -45,7 +45,7 @@ Acceptance: memory stays within a declared budget during large transfers and ove
 - Implemented: multi-stage image, Kubernetes base and OpenShift overlay, Service, optional Route, ConfigMap/Secret examples and resource requests/limits.
 - Implemented with container CI: run as an arbitrary non-root UID with a read-only root filesystem, dropped capabilities and no privileged mounts. Document required outbound DNS/TCP connectivity.
 - Implemented: separate process liveness from local accepting/draining readiness; neither probe depends on SMB. Monitor backend/share availability separately. See [deployment semantics](deployment.md).
-- Add request IDs, durations, transferred bytes, error classes and active-operation metrics without exposing secrets or sensitive full paths.
+- Implemented: generated request IDs, JSON request completion logs, HTTP status/outcome/latency/bytes metrics and client active/queued admission gauges without raw paths, shares or credentials. Optional OpenShift ServiceMonitor overlay and read-only acceptance script are prepared; actual scrape/cluster evidence remains outstanding. See [observability](observability.md).
 - Implemented: application drain and Pod grace budgets, SIGTERM container smoke and native/Fiber lifecycle tests. Actual cluster rolling updates remain unverified.
 
 Acceptance: actual restricted OpenShift deployment and evidence, including UID/filesystem constraints and in-flight request behavior. Do not claim this gate passed from local container tests alone.

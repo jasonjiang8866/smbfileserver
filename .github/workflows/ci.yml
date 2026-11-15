@@ -70,6 +70,9 @@ jobs:
         run: |
           go run sigs.k8s.io/kustomize/kustomize/v5@v5.8.0 build deploy/base > /tmp/kubernetes.yaml
           go run sigs.k8s.io/kustomize/kustomize/v5@v5.8.0 build deploy/openshift > /tmp/openshift.yaml
+          go run sigs.k8s.io/kustomize/kustomize/v5@v5.8.0 build deploy/openshift-monitoring > /tmp/openshift-monitoring.yaml
+      - name: Validate acceptance script without a cluster
+        run: python3 -m unittest discover -s scripts -p 'test_accept*.py'
       - name: Build gateway image
         run: docker build -t smbfileserver:ci .
       - name: Verify real SMB reads and restricted container runtime

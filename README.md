@@ -99,6 +99,7 @@ The previous `go run main.go readremotefile.go` command no longer includes all s
 | `SMB_USERNAME` | Required | Service account username |
 | `SMB_PASSWORD` | Required | Service account password |
 | `SMB_DOMAIN` | Empty | Optional NTLM domain; this is not Kerberos delegation |
+| `METRICS_ADDR` | Disabled | Optional separate internal Prometheus listener, e.g. `:9090`; restrict network access |
 | `HTTP_SERVER` | `nethttp` | Default native streaming server; `fiber` explicitly selects buffered single-file responses |
 | `HTTP_ADDR` | `:3000` | HTTP listener address; use `127.0.0.1:3000` for local-only access |
 | `REQUEST_TIMEOUT` | `30s` | Total SMB operation budget for a single or batch HTTP request, including queued batch work |
@@ -146,6 +147,10 @@ Batch workers default to 3 and are capped at 10 per request. The shared client a
 
 The default native gateway streams single files for HTTP/1.1+; HTTP/1.0 GET is buffered under the same per-file size limit and uses memory proportional to file size; Fiber remains an explicit buffered alternative. Both servers configure HTTP read/write/idle timeouts. The request budget covers the complete stream lifetime, not just Open. See [streaming limits and validation](docs/streaming.md).
 
+
+## Operational visibility
+
+The gateway returns a generated `X-Request-ID` and writes JSON request logs without raw paths, share names or tokens. Optional internal Prometheus metrics expose HTTP counts/latency/bytes, active and queued SMB reads, and Go runtime gauges. Native streaming aborts remain visible even after HTTP 200 headers. See [logging, metrics, the OpenShift monitoring overlay and read-only cluster acceptance](docs/observability.md).
 
 ## Lifecycle and verification
 

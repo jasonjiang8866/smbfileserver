@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smbfileserver-metrics-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: smbfileserver
+  policyTypes: [Ingress]
+  ingress:
+    # Preserve existing application ingress. Tighten this rule to approved
+    # callers/router/kubelet sources for your cluster before production.
+    - ports:
+        - protocol: TCP
+          port: 3000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-user-workload-monitoring
+      ports:
+        - protocol: TCP
+          port: 9090

@@ -15,6 +15,8 @@ import (
 
 type Config struct {
 	health                *gatewayHealth
+	observation           *observability
+	MetricsAddress        string
 	AccessConfigFile      string
 	ListenAddress         string
 	HTTPServer            string
@@ -56,6 +58,7 @@ func loadConfig(envFile string, lookup func(string) (string, bool)) (Config, err
 		return fallback
 	}
 	cfg := Config{
+		MetricsAddress:   strings.TrimSpace(get("METRICS_ADDR", "", "")),
 		AccessConfigFile: strings.TrimSpace(get("ACCESS_CONFIG_FILE", "", "")),
 		ListenAddress:    get("HTTP_ADDR", "", ":3000"),
 		HTTPServer:       get("HTTP_SERVER", "", "nethttp"),
@@ -84,6 +87,12 @@ func loadConfig(envFile string, lookup func(string) (string, bool)) (Config, err
 	_, port, err := net.SplitHostPort(cfg.ListenAddress)
 	if err != nil || !validPort(port) {
 		return Config{}, errors.New("HTTP_ADDR must be a host:port address with a port between 1 and 65535")
+	}
+	if cfg.MetricsAddress != "" {
+		_, port, err := net.SplitHostPort(cfg.MetricsAddress)
+		if err != nil || !validPort(port) {
+			return Config{}, errors.New("METRICS_ADDR must be empty or a host:port address with a port between 1 and 65535")
+		}
 	}
 	for _, field := range []struct {
 		name, fallback string
