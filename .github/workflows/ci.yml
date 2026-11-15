@@ -36,6 +36,9 @@ jobs:
       - name: Verify handler dependency boundary
         run: |
           test -z "$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/jasonjiang8866/smbfileserver/smbhttp")}}{{.ImportPath}}{{end}}' ./smbhttp)"
+      - name: Verify access policy dependency boundary
+        run: |
+          test -z "$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/jasonjiang8866/smbfileserver/access")}}{{.ImportPath}}{{end}}' ./access)"
       - name: Verify client has no gateway dependencies
         run: |
           go list -deps -f '{{.ImportPath}}' ./client > /tmp/client-dependencies

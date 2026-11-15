@@ -36,7 +36,7 @@ func newApp(cfg Config, reader smbhttp.FileReader, root context.Context) *fiber.
 	if err != nil {
 		panic(err)
 	} // Gateway configuration is validated before startup.
-	mounted := http.StripPrefix("/api/v1/smb", handler)
+	mounted := protectReader(reader, http.StripPrefix("/api/v1/smb", handler))
 	// fasthttp RequestCtx is pooled. Deriving a Go cancelCtx from it can leave
 	// cancellation propagation reading its values after Fiber recycles it.
 	// Fiber has no per-request disconnect signal; use the application-owned root.
@@ -55,6 +55,17 @@ func newHTTPHandler(cfg Config, reader smbhttp.FileReader) (http.Handler, error)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/hello", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("Hello, World 👋!")) })
-	mux.Handle("/api/v1/smb/", http.StripPrefix("/api/v1/smb", handler))
+	mux.Handle("/api/v1/smb/", protectReader(reader, http.StripPrefix("/api/v1/smb", handler)))
 	return mux, nil
+}
+
+// The executable always injects an access.Policy before starting either server.
+// Keeping this structural also permits the raw route/lifecycle unit fixtures.
+func protectReader(reader smbhttp.FileReader, handler http.Handler) http.Handler {
+	if policy, ok := reader.(interface {
+		Wrap(http.Handler) http.Handler
+	}); ok {
+		return policy.Wrap(handler)
+	}
+	return handler
 }

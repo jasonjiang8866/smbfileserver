@@ -31,9 +31,13 @@ func run() error {
 	defer stop()
 	requests, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	reader, err := newSMBClient(cfg)
+	backend, err := newSMBClient(cfg)
 	if err != nil {
 		return fmt.Errorf("SMB client configuration: %w", err)
+	}
+	reader, err := loadAccessPolicy(cfg.AccessConfigFile, backend)
+	if err != nil {
+		return err
 	}
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {

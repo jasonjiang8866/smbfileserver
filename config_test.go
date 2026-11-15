@@ -12,10 +12,10 @@ func envLookup(values map[string]string) func(string) (string, bool) {
 	return func(key string) (string, bool) { v, ok := values[key]; return v, ok }
 }
 func validEnv() map[string]string {
-	return map[string]string{"SMB_HOST": "files.example.test", "SMB_USERNAME": "reader", "SMB_PASSWORD": "secret"}
+	return map[string]string{"ACCESS_CONFIG_FILE": "access.json", "SMB_HOST": "files.example.test", "SMB_USERNAME": "reader", "SMB_PASSWORD": "secret"}
 }
 func TestConfigEnvironmentOnlyAndLegacy(t *testing.T) {
-	for _, values := range []map[string]string{validEnv(), {"serverIP": "files.example.test", "userName": "reader", "userPassword": "secret"}} {
+	for _, values := range []map[string]string{validEnv(), {"ACCESS_CONFIG_FILE": "access.json", "serverIP": "files.example.test", "userName": "reader", "userPassword": "secret"}} {
 		cfg, err := loadConfig(filepath.Join(t.TempDir(), "missing.env"), envLookup(values))
 		if err != nil {
 			t.Fatal(err)
@@ -30,7 +30,7 @@ func TestConfigPrecedenceAndSnapshot(t *testing.T) {
 	if err := os.WriteFile(path, []byte("SMB_HOST=file-host\nSMB_USERNAME=file-user\nSMB_PASSWORD=file-secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	values := map[string]string{"serverIP": "env-host", "SMB_USERNAME": "new-user", "userName": "old-user"}
+	values := map[string]string{"ACCESS_CONFIG_FILE": "access.json", "serverIP": "env-host", "SMB_USERNAME": "new-user", "userName": "old-user"}
 	cfg, err := loadConfig(path, envLookup(values))
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestConfigPrecedenceAndSnapshot(t *testing.T) {
 }
 func TestConfigValidation(t *testing.T) {
 	cases := []struct{ key, value string }{
-		{"SMB_HOST", ""}, {"SMB_USERNAME", ""}, {"SMB_PASSWORD", ""},
+		{"ACCESS_CONFIG_FILE", ""}, {"SMB_HOST", ""}, {"SMB_USERNAME", ""}, {"SMB_PASSWORD", ""},
 		{"SMB_HOST", "smb://host/share"}, {"SMB_HOST", "host:445"},
 		{"SMB_PORT", "0"}, {"SMB_PORT", "65536"}, {"HTTP_ADDR", ":abc"},
 		{"REQUEST_TIMEOUT", "0s"}, {"REQUEST_TIMEOUT", "-1s"}, {"REQUEST_TIMEOUT", "11m"},

@@ -14,6 +14,7 @@ import (
 )
 
 type Config struct {
+	AccessConfigFile      string
 	ListenAddress         string
 	HTTPServer            string
 	MaxBatchFiles         int
@@ -54,19 +55,20 @@ func loadConfig(envFile string, lookup func(string) (string, bool)) (Config, err
 		return fallback
 	}
 	cfg := Config{
-		ListenAddress: get("HTTP_ADDR", "", ":3000"),
-		HTTPServer:    get("HTTP_SERVER", "", "nethttp"),
-		SMBHost:       strings.TrimSpace(get("SMB_HOST", "serverIP", "")),
-		SMBPort:       get("SMB_PORT", "", "445"),
-		SMBUser:       get("SMB_USERNAME", "userName", ""),
-		SMBPassword:   get("SMB_PASSWORD", "userPassword", ""),
-		SMBDomain:     get("SMB_DOMAIN", "", ""),
+		AccessConfigFile: strings.TrimSpace(get("ACCESS_CONFIG_FILE", "", "")),
+		ListenAddress:    get("HTTP_ADDR", "", ":3000"),
+		HTTPServer:       get("HTTP_SERVER", "", "nethttp"),
+		SMBHost:          strings.TrimSpace(get("SMB_HOST", "serverIP", "")),
+		SMBPort:          get("SMB_PORT", "", "445"),
+		SMBUser:          get("SMB_USERNAME", "userName", ""),
+		SMBPassword:      get("SMB_PASSWORD", "userPassword", ""),
+		SMBDomain:        get("SMB_DOMAIN", "", ""),
 	}
 	if cfg.HTTPServer != "nethttp" && cfg.HTTPServer != "fiber" {
 		return Config{}, errors.New("HTTP_SERVER must be nethttp or fiber")
 	}
 	for _, field := range []struct{ name, value string }{
-		{"SMB_HOST", cfg.SMBHost}, {"SMB_USERNAME", cfg.SMBUser}, {"SMB_PASSWORD", cfg.SMBPassword},
+		{"ACCESS_CONFIG_FILE", cfg.AccessConfigFile}, {"SMB_HOST", cfg.SMBHost}, {"SMB_USERNAME", cfg.SMBUser}, {"SMB_PASSWORD", cfg.SMBPassword},
 	} {
 		if strings.TrimSpace(field.value) == "" {
 			return Config{}, fmt.Errorf("%s is required", field.name)

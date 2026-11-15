@@ -51,3 +51,7 @@ HTTP/1.1+ single-file GET responses stream when FileOpener is available and stre
 ## Overload classification
 
 Errors wrapping an `Overloaded() bool` marker returning true map to HTTP 503 with `SMB reader busy` before response headers. This covers the public client's `ErrBusy` (full queue or queue wait timeout) and custom readers without adding an import dependency. GET and HEAD use the same classification in streaming and buffered modes; HEAD omits the body. Valid batches keep HTTP 200 with this message on each rejected item. Parent/operation deadlines remain 504; caller cancellation remains 503 with `request canceled`. There is no automatic retry or Retry-After promise. See [admission](admission.md).
+
+## Optional access policy
+
+The bare handler remains authentication-neutral. For the provided service-token and logical-share policy, inject `access.Policy` as the reader and wrap the mounted handler with `Policy.Wrap`. Both steps are required. The standalone gateway requires this policy at startup; embeds may use their own authentication/authorization. See [access control and path limits](access-control.md).
