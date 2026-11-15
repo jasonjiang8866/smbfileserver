@@ -66,5 +66,13 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends samba
-      - name: Verify real SMB reads and failure recovery
+      - name: Render Kubernetes and OpenShift manifests
+        run: |
+          go run sigs.k8s.io/kustomize/kustomize/v5@v5.8.0 build deploy/base > /tmp/kubernetes.yaml
+          go run sigs.k8s.io/kustomize/kustomize/v5@v5.8.0 build deploy/openshift > /tmp/openshift.yaml
+      - name: Build gateway image
+        run: docker build -t smbfileserver:ci .
+      - name: Verify real SMB reads and restricted container runtime
+        env:
+          SMB_CONTAINER_TEST_IMAGE: smbfileserver:ci
         run: python3 scripts/test-samba.py

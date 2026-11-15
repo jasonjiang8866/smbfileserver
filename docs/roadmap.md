@@ -18,7 +18,7 @@ The public `smbhttp` package now supplies the standard `net/http` handler throug
 
 The public `client` package now supplies reusable read-only CloudSoda access: validated configuration, whole-operation timeouts, per-instance active-read admission, per-file byte limits, resource cleanup and backend-independent error categories. The gateway constructs one client for all requests. See [added value and limits](client.md).
 
-Next, move process/configuration wiring into a gateway command and complete the access-boundary work. Consider a public Fiber adapter separately; the current bridge is gateway wiring. Public APIs expose no CloudSoda types.
+Next, move process/configuration wiring into a gateway command and validate deployment acceptance. Consider a public Fiber adapter separately; the current bridge is gateway wiring. Public APIs expose no CloudSoda types.
 
 ## PR 2 — access boundaries
 
@@ -42,11 +42,11 @@ Acceptance: memory stays within a declared budget during large transfers and ove
 
 ## PR 4 — Kubernetes/OpenShift delivery
 
-- Multi-stage image, Kubernetes base and OpenShift overlay, Service, optional Route, ConfigMap/Secret examples and resource requests/limits.
-- Run as an arbitrary non-root UID with a read-only root filesystem, dropped capabilities and no privileged mounts. Document required outbound DNS/TCP connectivity.
-- Separate process liveness from backend readiness; avoid restarting every Pod during an SMB outage. Define readiness semantics for multiple shares.
+- Implemented: multi-stage image, Kubernetes base and OpenShift overlay, Service, optional Route, ConfigMap/Secret examples and resource requests/limits.
+- Implemented with container CI: run as an arbitrary non-root UID with a read-only root filesystem, dropped capabilities and no privileged mounts. Document required outbound DNS/TCP connectivity.
+- Implemented: separate process liveness from local accepting/draining readiness; neither probe depends on SMB. Monitor backend/share availability separately. See [deployment semantics](deployment.md).
 - Add request IDs, durations, transferred bytes, error classes and active-operation metrics without exposing secrets or sensitive full paths.
-- Match termination grace periods to application shutdown budgets; verify rolling updates.
+- Implemented: application drain and Pod grace budgets, SIGTERM container smoke and native/Fiber lifecycle tests. Actual cluster rolling updates remain unverified.
 
 Acceptance: actual restricted OpenShift deployment and evidence, including UID/filesystem constraints and in-flight request behavior. Do not claim this gate passed from local container tests alone.
 

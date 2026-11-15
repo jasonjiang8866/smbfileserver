@@ -124,7 +124,7 @@ subdirectory-root isolation claim is made.
 HEAD omits the body. All protected responses include `Cache-Control: no-store`,
 `Content-Disposition: attachment` (no untrusted filename interpolated), and
 `Content-Security-Policy: sandbox`; existing MIME/nosniff behavior remains.
-Downloads that used to render inline will now download. `/api/v1/hello` remains a
+Downloads that used to render inline will now download. `/livez` and `/readyz` are public local health probes with no SMB I/O; see [deployment](deployment.md). `/api/v1/hello` remains a
 public process-only endpoint; it cannot access SMB and is not a readiness probe.
 Both native and Fiber gateway modes use the policy. Fiber remains buffered and
 retains its existing disconnect-cancellation limitation.

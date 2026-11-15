@@ -14,6 +14,7 @@ import (
 )
 
 type Config struct {
+	health                *gatewayHealth
 	AccessConfigFile      string
 	ListenAddress         string
 	HTTPServer            string

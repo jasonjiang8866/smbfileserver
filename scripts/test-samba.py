@@ -10,6 +10,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -116,6 +117,8 @@ def main():
                    SMB_TEST_PORT=str(port), SMB_TEST_USER=username, SMB_TEST_PASSWORD=password)
         subprocess.run(['go', 'test', '-race', '-tags=integration', '-count=1', '-timeout=90s',
                         '-v', '-run=TestSMBIntegration', './...'], env=env, check=True)
+        if image := os.environ.get('SMB_CONTAINER_TEST_IMAGE'):
+            subprocess.run([sys.executable, 'scripts/test-container.py', image], env=env, check=True)
     except BaseException:
         # Only synthetic fixture logs at log level zero; never print its password.
         if log:
