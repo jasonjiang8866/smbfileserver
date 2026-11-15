@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -28,6 +29,7 @@ func newApp(cfg Config, reader smbhttp.FileReader, root context.Context) *fiber.
 			return c.Status(status).JSON(fiber.Map{"error": message})
 		},
 	})
+	app.Use(cfg.observer().fiberMiddleware)
 	app.Use(recoverer.New())
 	health := cfg.probeHealth()
 	app.All("/livez", adaptor.HTTPHandler(health.handler(false)))
@@ -44,7 +46,10 @@ func newApp(cfg Config, reader smbhttp.FileReader, root context.Context) *fiber.
 	// cancellation propagation reading its values after Fiber recycles it.
 	// Fiber has no per-request disconnect signal; use the application-owned root.
 	bridge := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mounted.ServeHTTP(w, r.WithContext(root))
+		// The adaptor borrows fasthttp header memory; retain only an owned copy.
+		id := strings.Clone(r.Header.Get("X-Request-ID"))
+		w.Header().Set("X-Request-ID", id)
+		mounted.ServeHTTP(w, r.WithContext(context.WithValue(root, requestIDKey{}, id)))
 	})
 	app.Use("/api/v1/smb", adaptor.HTTPHandler(bridge))
 	return app
@@ -62,7 +67,7 @@ func newHTTPHandler(cfg Config, reader smbhttp.FileReader) (http.Handler, error)
 	mux.Handle("/readyz", health.handler(true))
 	mux.HandleFunc("GET /api/v1/hello", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("Hello, World 👋!")) })
 	mux.Handle("/api/v1/smb/", protectReader(reader, http.StripPrefix("/api/v1/smb", handler)))
-	return mux, nil
+	return cfg.observer().wrap(mux), nil
 }
 
 // The executable always injects an access.Policy before starting either server.

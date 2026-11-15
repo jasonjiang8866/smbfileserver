@@ -151,8 +151,10 @@ server/dialect and these results:
 - DNS/SMB firewall rules, certificate trust, actual Windows reparse/DFS behavior
   and memory under expected concurrency pass your environment's checks.
 
-Request IDs, structured operation metrics, Windows/AD validation, published/scanned
-release images and real OpenShift acceptance remain follow-up work.
+Request IDs, structured request logs, an optional metrics listener and an OpenShift
+monitoring overlay are now available: see [observability and cluster acceptance](observability.md).
+Windows/AD validation, published/scanned release images and real OpenShift acceptance
+remain follow-up work.
 
 References: [Kubernetes probes](https://kubernetes.io/docs/concepts/workloads/pods/probes/),
 [security context](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/),

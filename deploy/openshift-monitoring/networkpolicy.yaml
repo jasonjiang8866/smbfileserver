@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smbfileserver-metrics-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: smbfileserver
+  policyTypes: [Ingress]
+  ingress:
+    # Allow same-namespace clients and the default OpenShift router namespace.
+    # Explicitly add approved cross-namespace callers in your site overlay.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-ingress
+      ports:
+        - protocol: TCP
+          port: 3000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-user-workload-monitoring
+      ports:
+        - protocol: TCP
+          port: 9090

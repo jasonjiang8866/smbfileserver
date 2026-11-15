@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: smbfileserver-metrics
+  labels:
+    app: smbfileserver
+    component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    app: smbfileserver
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics

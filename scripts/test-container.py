@@ -25,6 +25,9 @@ def main():
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        metrics_port = sock.getsockname()[1]
     with tempfile.TemporaryDirectory(prefix='smb-container-') as directory:
         root = pathlib.Path(directory)
         root.chmod(0o755)
@@ -35,6 +38,7 @@ def main():
                           'shares': ['reports']}]}))
         policy.chmod(0o444)
         environment = {
+            'METRICS_ADDR': f'127.0.0.1:{metrics_port}',
             'HTTP_ADDR': f'127.0.0.1:{port}', 'HTTP_SERVER': 'nethttp',
             'ACCESS_CONFIG_FILE': '/access.json', 'REQUEST_TIMEOUT': '5s', 'SHUTDOWN_TIMEOUT': '2s',
             'SMB_HOST': os.environ['SMB_TEST_HOST'], 'SMB_PORT': os.environ['SMB_TEST_PORT'],
@@ -47,7 +51,9 @@ def main():
         http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
         def request(path, authorized=False, method='GET'):
-            headers = {'Authorization': 'Bearer ' + token} if authorized else {}
+            headers = {'X-Request-ID': 'private-incoming-id'}
+            if authorized:
+                headers['Authorization'] = 'Bearer ' + token
             req = urllib.request.Request(f'http://127.0.0.1:{port}' + path, headers=headers, method=method)
             try:
                 response = http.open(req, timeout=3)
@@ -82,6 +88,8 @@ def main():
             assert status == 200 and body == b'SMB integration fixture\n', (status, body)
             assert headers.get_content_disposition() == 'attachment'
             assert headers['Cache-Control'] == 'no-store'
+            request_id = headers['X-Request-ID']
+            assert len(request_id) == 32 and request_id != 'private-incoming-id'
             assert request('/api/v1/smb/readonly/hello.txt', True)[0] == 403
             assert request('/api/v1/smb/reports/escape-link.txt', True)[0] != 200
             # Inspect only non-secret runtime fields; never dump container env.
@@ -94,9 +102,22 @@ def main():
             assert uids and all(uid.strip() == '1001234567' for uid in uids), uids
             print('Container: arbitrary UID 1001234567, read-only root, dropped capabilities verified.', flush=True)
             print('Container: probes, authenticated Samba download, unauthorized share and symlink denial passed.', flush=True)
+            assert request('/metrics')[0] == 404
+            with http.open(f'http://127.0.0.1:{metrics_port}/metrics', timeout=3) as response:
+                metrics = response.read().decode()
+            assert 'smb_gateway_http_requests_total' in metrics
+            assert 'smb_gateway_smb_active_reads 0' in metrics
+            assert 'smb_gateway_smb_queued_reads 0' in metrics
+            assert 'outcome="client_error"' in metrics
             docker('stop', '--time', '5', name)
             assert docker('inspect', '--format', '{{.State.ExitCode}}', name) == '0'
             print('Container: SIGTERM exited cleanly with code 0.', flush=True)
+            logs = docker('logs', name)
+            events = [json.loads(line) for line in logs.splitlines()]
+            assert any(event.get('request_id') == request_id and event.get('status') == 200 for event in events)
+            for sensitive in (token, environment['SMB_PASSWORD'], 'hello.txt', 'escape-link.txt', 'private-incoming-id'):
+                assert sensitive not in logs and sensitive not in metrics
+            print('Container: request ID/log correlation, metrics and log redaction verified.', flush=True)
         finally:
             subprocess.run(['docker', 'rm', '-f', name], check=True, stdout=subprocess.DEVNULL)
             assert not docker('ps', '-aq', '--filter', f'name=^/{name}$')
