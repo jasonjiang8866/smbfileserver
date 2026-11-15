@@ -88,8 +88,10 @@ Kustomization. It adds the metrics listener/Service, a ServiceMonitor and an ing
 NetworkPolicy. It requires Prometheus Operator CRDs and administrator-enabled
 OpenShift user workload monitoring. The policy permits metrics ingress only from
 `openshift-user-workload-monitoring`; adapt this if your monitoring namespace differs.
-Its application-port rule preserves existing ingress on TCP 3000. Tighten that rule
-for approved callers/router/probes before production. NetworkPolicies are additive:
+Its TCP 3000 rule allows same-namespace clients and the default `openshift-ingress`
+router namespace. Explicitly add approved cross-namespace callers and verify kubelet
+probe reachability under your CNI. This overlay can therefore block existing
+cross-namespace clients until you configure their ingress rules. NetworkPolicies are additive:
 another broad allow policy can reopen metrics access. Review effective policies.
 The overlay does not grant cluster roles or enable monitoring cluster-wide.
 

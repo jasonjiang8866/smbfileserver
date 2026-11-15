@@ -8,9 +8,14 @@ spec:
       app: smbfileserver
   policyTypes: [Ingress]
   ingress:
-    # Preserve existing application ingress. Tighten this rule to approved
-    # callers/router/kubelet sources for your cluster before production.
-    - ports:
+    # Allow same-namespace clients and the default OpenShift router namespace.
+    # Explicitly add approved cross-namespace callers in your site overlay.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-ingress
+      ports:
         - protocol: TCP
           port: 3000
     - from:
